@@ -1,4 +1,4 @@
-# Team Hub for Revit — installs for the current Windows user (no admin needed).
+﻿# Team Hub for Revit — installs for the current Windows user (no admin needed).
 # Supports Revit 2025 and 2026 (both .NET 8). Run from the folder that has TeamHub.Revit.dll.
 $ErrorActionPreference = 'Stop'
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -30,4 +30,12 @@ foreach ($v in 2025, 2026) {
 }
 Write-Host "Team Hub installed for Revit 2025 and 2026."
 if ($installed.Count) { Write-Host ("Revit found on this PC: " + ($installed -join ', ')) }
-Write-Host "Open Revit. If it asks about loading an unsigned add-in, choose 'Always Load'."
+$cer = Join-Path $src 'TeamHub-Revit.cer'
+$trusted = (Test-Path $cer) -and (Get-ChildItem Cert:\CurrentUser\TrustedPublisher | Where-Object { $_.Thumbprint -eq (New-Object System.Security.Cryptography.X509Certificates.X509Certificate2 $cer).Thumbprint })
+if ((Test-Path $cer) -and -not $trusted) {
+  Write-Host ""
+  Write-Host "The add-in is signed by Team Hub. Trust that signature so Revit never asks again"
+  Write-Host "(only files signed with this certificate are affected; Windows will ask you to confirm)."
+  if ((Read-Host "Trust it? (Y/N)") -match '^[Yy]') { & (Join-Path $src 'trust-certificate.ps1') }
+}
+Write-Host "Open Revit. If it still asks about the add-in, choose 'Always Load'."

@@ -63,7 +63,7 @@ namespace TeamHub.Revit
             try
             {
                 if (_stage < 0) return;
-                if (Since > 240) { W($"TIMEOUT at stage {_stage}"); _stage = -1; return; }
+                if (Since > 900) { W($"TIMEOUT at stage {_stage}"); _stage = -1; return; }
                 if (Role == "A") StepA(uiapp); else StepB(uiapp);
             }
             catch (Exception ex)
@@ -101,16 +101,75 @@ namespace TeamHub.Revit
             _doc = uiapp.OpenAndActivateDocument(ModelPathUtils.ConvertUserVisiblePathToModelPath(local), opts, false).Document;
         }
 
-        void AddWall(Document doc, double y)
+        Wall AddWall(Document doc, double y)
         {
             var level = new FilteredElementCollector(doc).OfClass(typeof(Level)).Cast<Level>().First();
             using var t = new Transaction(doc, "Team Hub test wall");
             t.Start();
-            Wall.Create(doc, Line.CreateBound(new XYZ(0, y, 0), new XYZ(20, y, 0)), level.Id, false);
+            var w = Wall.Create(doc, Line.CreateBound(new XYZ(0, y, 0), new XYZ(20, y, 0)), level.Id, false);
             t.Commit();
             _wallAt = DateTime.UtcNow;
+            return w;
         }
 
+        // ------------------------------------------------------------ helpers shared by both roles
+
+        // Each role appends to its own file and reads the other's: no write races.
+        string BusFile(string role) => S("out") + "." + role + ".bus";
+
+        void Post(string key) => File.AppendAllText(BusFile(Role), $"{DateTime.UtcNow.Ticks} {key}{Environment.NewLine}");
+
+        (DateTime at, string value)? Find(string prefix)
+        {
+            var f = BusFile(Role == "A" ? "B" : "A");
+            if (!File.Exists(f)) return null;
+            foreach (var line in File.ReadAllLines(f))
+            {
+                var i = line.IndexOf(' ');
+                if (i > 0 && line.Substring(i + 1).StartsWith(prefix))
+                    return (new DateTime(long.Parse(line.Substring(0, i)), DateTimeKind.Utc), line.Substring(i + 1 + prefix.Length));
+            }
+            return null;
+        }
+
+        DateTime? Seen(string key) => Find(key)?.at;
+        string SeenValue(string prefix) => Find(prefix)?.value;
+        double MsSince(DateTime? t) => t == null ? -1 : (DateTime.UtcNow - t.Value).TotalMilliseconds;
+        void Check(bool ok, string what) => W((ok ? "PASS " : "FAIL ") + what);
+
+        static string R(double v) => Math.Round(v, 3).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture);
+
+        // Every wall's exact line (start/end x, y, z), sorted: the whole model's walls.
+        string Fingerprint(Document doc)
+        {
+            var parts = new FilteredElementCollector(doc).OfClass(typeof(Wall)).Cast<Wall>().Select(w =>
+            {
+                var c = (w.Location as LocationCurve)?.Curve;
+                if (c == null) return "?";
+                var a = c.GetEndPoint(0);
+                var b = c.GetEndPoint(1);
+                return $"({R(a.X)},{R(a.Y)},{R(a.Z)})-({R(b.X)},{R(b.Y)},{R(b.Z)})";
+            }).OrderBy(x => x, StringComparer.Ordinal);
+            return string.Join(" ", parts);
+        }
+
+        Wall WallAt(Document doc, double y) => new FilteredElementCollector(doc).OfClass(typeof(Wall)).Cast<Wall>()
+            .FirstOrDefault(w => (w.Location as LocationCurve)?.Curve is Curve c && Math.Abs(c.GetEndPoint(0).Y - y) < 0.001);
+
+        bool SyncedSince(DateTime t) => App.Live.Session.LastSyncUtc > t;
+
+        // Wait (up to a minute) for something the other side did; then report it.
+        bool Arrived(string key, Func<bool> ok, string what)
+        {
+            var at = Seen(key);
+            if (at == null) return false;
+            var good = ok();
+            if (!good && MsSince(at) < 60000) return false;
+            Check(good, $"{what} {MsSince(at) / 1000:0.0}s after it happened (walls={Walls(_doc)})");
+            return true;
+        }
+
+        // ------------------------------------------------------------ A: creates the project
         void StepA(UIApplication uiapp)
         {
             var central = S("central");
@@ -141,35 +200,76 @@ namespace TeamHub.Revit
                     break;
                 }
                 case 2:
-                {
                     // Revit can't hold a central and its local in one session: close central first.
                     _doc.Close(false);
                     OpenLocal(uiapp, central, S("local"));
+                    Post("A:ready");
                     Next("central closed, local opened");
                     break;
-                }
                 case 3:
-                    if (App.Live.Session != null) Next("live session started");
+                    if (App.Live.Session != null && Seen("B:live") != null) Next("live session started, B is live too");
                     break;
                 case 4:
-                    if (Since < 8) break;
                     AddWall(_doc, 0);
-                    Next($"added wall #1 (walls={Walls(_doc)})");
+                    Post("A:added");
+                    Next($"added wall at y=0 (walls={Walls(_doc)})");
                     break;
                 case 5:
-                    if (App.Live.Session.LastSyncUtc > _wallAt)
-                        Next($"SYNCED wall #1 {(App.Live.Session.LastSyncUtc - _wallAt).TotalSeconds:0.0}s after the edit (sync took {App.Live.Session.LastDuration.TotalSeconds:0.0}s)");
+                    if (SyncedSince(_wallAt)) Next($"synced my wall {(App.Live.Session.LastSyncUtc - _wallAt).TotalSeconds:0.0}s after drawing it");
                     break;
                 case 6:
-                    if (Walls(_doc) >= 2) Next($"SEES B's wall (walls={Walls(_doc)}) — received automatically");
+                    if (Arrived("B:added", () => WallAt(_doc, 10) != null, "B's new wall reached A")) Next();
                     break;
                 case 7:
+                {
+                    var w = WallAt(_doc, 0);
+                    using (var t = new Transaction(_doc, "move wall"))
+                    {
+                        t.Start();
+                        ElementTransformUtils.MoveElement(_doc, w.Id, new XYZ(0, 5, 0));
+                        t.Commit();
+                    }
+                    _wallAt = DateTime.UtcNow;
+                    Post("A:moved");
+                    Next("moved my wall y=0 -> y=5");
+                    break;
+                }
+                case 8:
+                    if (SyncedSince(_wallAt)) Next("synced the move");
+                    break;
+                case 9:
+                    if (Arrived("B:deleted", () => WallAt(_doc, 10) == null, "B's delete reached A")) Next();
+                    break;
+                case 10:
+                    Post("A:go");
+                    AddWall(_doc, 30);
+                    Next("drew wall y=30 at the same moment as B draws y=40");
+                    break;
+                case 11:
+                {
+                    var ok = WallAt(_doc, 30) != null && WallAt(_doc, 40) != null && WallAt(_doc, 5) != null && Walls(_doc) == 3;
+                    if (!ok && Since < 90) break;
+                    Check(ok, $"both simultaneous walls on A after {Since:0.0}s (walls={Walls(_doc)})");
+                    Next();
+                    break;
+                }
+                case 12:
+                {
+                    if (Since < 3) break;
+                    var theirs = SeenValue("B:fp=");
+                    if (theirs == null && Since < 60) break;
+                    var mine = Fingerprint(_doc);
+                    Check(theirs == mine, "WHOLE MODEL identical on A and B (every wall's exact x/y/z)");
+                    W("A walls: " + mine);
+                    if (theirs != mine) W("B walls: " + theirs);
                     W("DONE");
                     _stage = -1;
                     break;
+                }
             }
         }
 
+        // ------------------------------------------------------------ B: joins
         void StepB(UIApplication uiapp)
         {
             var central = S("central");
@@ -180,6 +280,7 @@ namespace TeamHub.Revit
                     break;
                 case 1:
                 {
+                    if (Seen("A:ready") == null) break;
                     var r = App.Hub.Get("/api/projects").GetAwaiter().GetResult();
                     var p = r.Data?["projects"]?.AsArray().LastOrDefault(x => x?["kind"]?.GetValue<string>() == "revit");
                     if (p == null || !File.Exists(central)) break;
@@ -188,29 +289,61 @@ namespace TeamHub.Revit
                     break;
                 }
                 case 2:
-                    if (Since < 4) break; // let A finish closing its central
                     OpenLocal(uiapp, central, S("local"));
                     Next($"local opened (walls={Walls(_doc)})");
                     break;
                 case 3:
-                    if (App.Live.Session != null) Next("live session started");
+                    if (App.Live.Session == null) break;
+                    Post("B:live");
+                    Next("live session started");
                     break;
                 case 4:
-                    if (Walls(_doc) >= 1) Next($"SEES A's wall (walls={Walls(_doc)}) — received automatically");
+                    if (Arrived("A:added", () => WallAt(_doc, 0) != null, "A's new wall reached B")) Next();
                     break;
                 case 5:
-                    if (Since < 3) break;
                     AddWall(_doc, 10);
-                    Next($"added wall #2 (walls={Walls(_doc)})");
+                    Post("B:added");
+                    Next("added wall at y=10");
                     break;
                 case 6:
-                    if (App.Live.Session.LastSyncUtc > _wallAt)
-                        Next($"SYNCED wall #2 {(App.Live.Session.LastSyncUtc - _wallAt).TotalSeconds:0.0}s after the edit (sync took {App.Live.Session.LastDuration.TotalSeconds:0.0}s)");
+                    if (SyncedSince(_wallAt)) Next($"synced my wall {(App.Live.Session.LastSyncUtc - _wallAt).TotalSeconds:0.0}s after drawing it");
                     break;
                 case 7:
+                    if (Arrived("A:moved", () => WallAt(_doc, 5) != null && WallAt(_doc, 0) == null, "A's move reached B (wall exactly at y=5)")) Next();
+                    break;
+                case 8:
+                {
+                    var w = WallAt(_doc, 10);
+                    using (var t = new Transaction(_doc, "delete wall"))
+                    {
+                        t.Start();
+                        _doc.Delete(w.Id);
+                        t.Commit();
+                    }
+                    _wallAt = DateTime.UtcNow;
+                    Post("B:deleted");
+                    Next("deleted my wall y=10");
+                    break;
+                }
+                case 9:
+                    if (SyncedSince(_wallAt)) Next("synced the delete");
+                    break;
+                case 10:
+                    if (Seen("A:go") == null) break;
+                    AddWall(_doc, 40);
+                    Next("drew wall y=40 at the same moment as A draws y=30");
+                    break;
+                case 11:
+                {
+                    var ok = WallAt(_doc, 30) != null && WallAt(_doc, 40) != null && WallAt(_doc, 5) != null && Walls(_doc) == 3;
+                    if (!ok && Since < 90) break;
+                    Check(ok, $"both simultaneous walls on B after {Since:0.0}s (walls={Walls(_doc)})");
+                    Post("B:fp=" + Fingerprint(_doc));
+                    W("B walls: " + Fingerprint(_doc));
                     W("DONE");
                     _stage = -1;
                     break;
+                }
             }
         }
     }
