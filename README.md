@@ -1,9 +1,9 @@
 # Revit Team Hub
 
-**Near-live team work on one Revit project, through a small server on your own PC — no shared folder, no unsigned add-in prompts.**
+**Near-live team work on one Revit project, through a small server on your own PC — no shared folder, one-file install, updates itself.**
 Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs by itself** a few seconds after you stop editing, and everyone else's Revit **reloads the latest changes by itself**.
 
-- Runs inside **pyRevit** (recommended): no `.addin` file, no "unsigned add-in" question, updates in one click
+- One-file install (`install.cmd`), no admin rights; **updates itself** from your server (which follows the newest GitHub release)
 - The central model lives **on the Team Hub server** (like SketchUp Team Hub): upload once, the team downloads it — no Windows file share
 - Syncs in calm rounds: every 30 s your changes go up and the team's come down together — never in the middle of your work
 - Every sync is kept as a revision on the server (backups)
@@ -17,9 +17,9 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 ## شلون يشتغل
 
 ```
- Revit + pyRevit (محمد)  ─┐
- Revit + pyRevit (ياسين) ─┼── Radmin VPN ──►  جهاز السيرفر: Team Hub Server
- Revit + pyRevit (ثالث)  ─┘                    • الملف الرئيسي (Central) + كل نسخه القديمة
+ Revit (محمد)  ─┐
+ Revit (ياسين) ─┼── Radmin VPN ──►  جهاز السيرفر: Team Hub Server
+ Revit (ثالث)  ─┘                                   • الملف الرئيسي (Central) + كل نسخه القديمة
                                                • دور المزامنة (واحد بعد واحد) + الإشعارات
 ```
 
@@ -39,10 +39,9 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 | الشي | منو يحتاجه | منين |
 |---|---|---|
 | **Revit 2025 أو 2026** (نفس الإصدار لكل الفريق بالمشروع الواحد) | كل الفريق | Autodesk |
-| **pyRevit** | كل الفريق | [pyRevit Releases](https://github.com/pyrevitlabs/pyRevit/releases) |
 | **Node.js 22.13 أو أحدث** (LTS) | **جهاز السيرفر بس** | [nodejs.org](https://nodejs.org) |
 | **Radmin VPN** | كل الفريق، إذا عن بعد | [radmin-vpn.com](https://www.radmin-vpn.com) |
-| **الإضافة** `TeamHub-pyRevit.zip` | كل الفريق | صفحة [Releases](../../releases) |
+| **الإضافة** `TeamHub-Revit.zip` | كل الفريق | صفحة [Releases](../../releases) |
 
 ### ⚠ الإصدارات
 
@@ -64,16 +63,16 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 
 ## الخطوة 2: كل عضو (ومنهم انت)
 
-1. **نصّب pyRevit** إذا مو منصّب، وافتح Revit مرة حتى يشتغل.
-2. نزّل **`TeamHub-pyRevit.zip`** من [Releases](../../releases)، فك الضغط، ودبل كلك على **`install-pyrevit.cmd`**.
-   - ينسخ الإضافة لفولدر pyRevit، ويطفي النسخة القديمة من الإضافة (`.addin`) إذا موجودة.
-   - ما يحتاج صلاحيات مدير.
+1. نزّل **`TeamHub-Revit.zip`** من [Releases](../../releases)، فك الضغط، ودبل كلك على **`install.cmd`**. ما يحتاج صلاحيات مدير.
+2. يسألك **Trust it? (Y/N)**: اكتب **Y**، ووندوز يطلب تأكيد، دوس **Yes**.
+   بعدها Revit ما يسألك ولا مرة، ولا بالتحديثات.
 3. **افتح Revit.** يطلع تبويب **Team Hub**.
-   - إذا Revit كان مفتوح: **pyRevit ← Reload**.
 4. **Team Hub ← الحساب:** عنوان السيرفر (`http://26.x.x.x:8787`) واسمك وكلمة سرك.
 5. **اسمك بـ Revit:** File ← Options ← General ← **Username**. لازم **كل واحد يكون اسمه مختلف**، وإلا ملكية العناصر تتلخبط.
 
-**التحديث:** نزّل الـ zip الجديد وشغّل `install-pyrevit.cmd` مرة ثانية. يشتغل حتى لو Revit مفتوح، والنسخة الجديدة تشتغل من تفتح Revit الجاي.
+**التحديث تلقائي:** كل ما تطلع نسخة جديدة، سيرفرك ينزّلها من GitHub وحده،
+والإضافة عند كل واحد تتحدث من السيرفر لحالها (أول ما يفتح Revit، وكل 6 ساعات).
+النسخة الجديدة تشتغل من تفتح Revit المرة الجاية، ولوحة Team Hub تبلغك.
 
 ## الخطوة 3: بداية مشروع
 
@@ -104,14 +103,14 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 
 | المشكلة | الحل |
 |---|---|
-| تبويب Team Hub ما طالع | تأكد إن pyRevit يشتغل (عندك تبويب pyRevit)، وشغّل `install-pyrevit.cmd` مرة ثانية، وبعدين pyRevit ← Reload |
+| تبويب Team Hub ما طالع | شغّل `install.cmd` مرة ثانية وافتح Revit. إذا سألك عن الإضافة، اختار **Always Load** |
 | «ما كدرت أوصل للسيرفر» | تأكد إن نافذة `start-server.bat` مفتوحة بجهاز السيرفر، وRadmin متصل، والعنوان صح |
 | شي مو مضبوط | السجل بـ `%APPDATA%\TeamHub\revit.log` |
 
 ## حالة الاختبار
 
 اختبار بنافذتين Revit 2025 حقيقيات على نفس الجهاز، وكل وحدة بحساب Team Hub مختلف.
-الإضافة تشتغل **عن طريق pyRevit**، والملف الرئيسي **يمر عن طريق السيرفر** (كل نافذة عندها نسختها منه).
+الملف الرئيسي **يمر عن طريق السيرفر** (كل نافذة عندها نسختها منه).
 
 | الاختبار | v1.2 (مزامنة بعد 5 ثواني) | v1.3 (جولة كل 10 ثواني بالاختبار) |
 |---|---|---|
@@ -133,15 +132,14 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 node tools/build-revit.js
 ```
 
-يحتاج .NET 8 SDK وRevit 2025. يطلع `dist/TeamHub-pyRevit.zip` (الطريقة الموصى بيها) و`dist/TeamHub-Revit.zip` (الإضافة القديمة بملف `.addin`).
+يحتاج .NET 8 SDK وRevit 2025. يطلع `dist/TeamHub-Revit.zip`.
 
 ## هيكل المشروع
 
 ```
-revit/TeamHub.Revit/        المحرك (C#): المزامنة، والملف الرئيسي على السيرفر، واللوحة، والأزرار
-revit/pyrevit/              إضافة pyRevit (TeamHub.extension) + install-pyrevit
-revit/installer/            الإضافة القديمة بملف .addin (بديل بدون pyRevit)
-server/                     سيرفر Team Hub (Node.js): revit_hosted.js = الملف الرئيسي ونسخه
+revit/TeamHub.Revit/        الإضافة (C#): المزامنة، والملف الرئيسي على السيرفر، والتحديث التلقائي، واللوحة
+revit/installer/            install.cmd + الشهادة
+server/                     سيرفر Team Hub (Node.js): revit_hosted.js = الملف الرئيسي ونسخه، updates.js = التحديث من GitHub
 tools/build-revit.js        البناء
 ```
 

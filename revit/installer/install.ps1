@@ -4,6 +4,10 @@ $ErrorActionPreference = 'Stop'
 $src = Split-Path -Parent $MyInvocation.MyCommand.Path
 $bin = Join-Path $env:APPDATA 'TeamHub\revit\bin'
 New-Item -ItemType Directory -Force $bin | Out-Null
+$dll0 = Join-Path $bin 'TeamHub.Revit.dll'
+# Revit may have the old copy open: an open file can't be overwritten, but it
+# can be renamed, so move it aside (Team Hub deletes it the next time Revit starts).
+if (Test-Path $dll0) { Rename-Item $dll0 ("TeamHub.Revit.old-" + (Get-Date -Format yyyyMMddHHmmss) + ".dll") }
 Copy-Item (Join-Path $src 'TeamHub.Revit.dll') $bin -Force
 $dll = Join-Path $bin 'TeamHub.Revit.dll'
 
@@ -20,6 +24,15 @@ $manifest = @"
   </AddIn>
 </RevitAddIns>
 "@
+
+# An earlier pyRevit copy of Team Hub would load a second time: move it aside.
+$pyext = Join-Path $env:APPDATA 'pyRevit\Extensions\TeamHub.extension'
+if (Test-Path $pyext) {
+  $bak = Join-Path $env:APPDATA 'TeamHub\pyrevit-extension-backup'
+  if (Test-Path $bak) { Remove-Item $bak -Recurse -Force }
+  Move-Item $pyext $bak
+  Write-Host "Old pyRevit copy of Team Hub moved aside (not needed any more)."
+}
 
 $installed = @()
 foreach ($v in 2025, 2026) {

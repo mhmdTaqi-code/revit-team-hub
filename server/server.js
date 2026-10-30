@@ -731,6 +731,15 @@ function revitPluginInfo() {
 
 // The SketchUp plugin is hosted here so every member installs/updates the
 // same version, whatever SketchUp version they run.
+// The Revit add-in asks this when it starts (and every few hours) and updates
+// itself when there's something newer. Public: needs no login.
+route('GET', '/api/revit/update', () => {
+  const info = revitPluginInfo();
+  if (!info) throw httpError(404, 'plugin_not_found');
+  return { version: info.version, addin: '/download/teamhub_revit.zip',
+    pyrevit: fs.existsSync(path.join(PLUGIN_DIR, 'teamhub_pyrevit.zip')) ? '/download/teamhub_pyrevit.zip' : null };
+});
+
 route('GET', '/api/plugin', (ctx) => {
   requireRole(ctx.user, 'admin', 'editor', 'viewer');
   const info = pluginInfo();
@@ -1387,6 +1396,9 @@ route('GET', '/api/projects/:pid/revit/backups', (ctx) => {
   return { central_local: centralLocalPath(p), backups: list, folder: root };
 });
 
+// Plugins on this server follow their newest GitHub release by themselves.
+require('./updates').start({ pluginDir: PLUGIN_DIR, config });
+
 require('./revit_hosted').install({ route, db, DATA_DIR, getRevitProject, requireRole, readJson, httpError, now, syncTurns,
   SYNC_LEASE_MS, publicUser });
 
@@ -1456,7 +1468,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const DOWNLOADS = { '/download/su_team_hub.rbz': 'su_team_hub.rbz', '/download/teamhub_revit.zip': 'teamhub_revit.zip',
-    '/download/teamhub_photoshop.ccx': 'teamhub_photoshop.ccx' };
+    '/download/teamhub_pyrevit.zip': 'teamhub_pyrevit.zip', '/download/teamhub_photoshop.ccx': 'teamhub_photoshop.ccx' };
   if (DOWNLOADS[url.pathname] && req.method === 'GET') {
     // Public on purpose: a new member needs the plugin before they have an account set up.
     const file = path.join(PLUGIN_DIR, DOWNLOADS[url.pathname]);

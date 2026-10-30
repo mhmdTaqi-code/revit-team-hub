@@ -41,28 +41,6 @@ for (const [dir, name] of [[path.join(ROOT, 'dist'), 'TeamHub-Revit.zip'], [path
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, name), out);
 }
-// The same engine as a pyRevit extension (recommended): pyRevit loads it, so
-// there's no .addin manifest and no signing question.
-const EXT = path.join(ROOT, 'revit', 'pyrevit', 'TeamHub.extension');
-fs.mkdirSync(path.join(EXT, 'bin'), { recursive: true });
-fs.copyFileSync(dll, path.join(EXT, 'bin', 'TeamHub.Revit.dll'));
-const extEntries = [];
-(function walk(dir, rel) {
-  for (const name of fs.readdirSync(dir).sort()) {
-    const full = path.join(dir, name);
-    const r = `${rel}/${name}`;
-    if (fs.statSync(full).isDirectory()) walk(full, r);
-    else extEntries.push({ name: r, data: fs.readFileSync(full) });
-  }
-})(EXT, 'TeamHub-pyRevit/TeamHub.extension');
-for (const f of ['install-pyrevit.cmd', 'install-pyrevit.ps1']) {
-  extEntries.push({ name: `TeamHub-pyRevit/${f}`, data: fs.readFileSync(path.join(ROOT, 'revit', 'pyrevit', f)) });
-}
-const extZip = zip(extEntries);
-fs.writeFileSync(path.join(ROOT, 'dist', 'TeamHub-pyRevit.zip'), extZip);
-fs.writeFileSync(path.join(ROOT, 'server', 'plugin', 'teamhub_pyrevit.zip'), extZip);
-console.log(`pyRevit extension: ${extEntries.length} files, ${extZip.length} bytes -> dist/TeamHub-pyRevit.zip`);
-
 fs.writeFileSync(path.join(ROOT, 'server', 'plugin', 'revit-version.json'),
   JSON.stringify({ version, built_at: Date.now(), revit: ['2025', '2026'] }, null, 2));
 console.log(`Team Hub for Revit v${version}: ${out.length} bytes -> dist/TeamHub-Revit.zip and server/plugin/`);

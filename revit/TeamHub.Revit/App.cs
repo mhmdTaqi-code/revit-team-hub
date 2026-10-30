@@ -71,6 +71,7 @@ namespace TeamHub.Revit
                 app.ControlledApplication.DocumentClosing += OnDocumentClosing;
                 app.ControlledApplication.DocumentChanged += (s, e) => Live.OnDocumentChanged(e);
                 SelfTest.Init();
+                Updater.Start();
                 Log.Info($"Team Hub {Version} loaded in Revit {RevitVersion} (add-in)");
                 return Result.Succeeded;
             }
@@ -106,6 +107,7 @@ namespace TeamHub.Revit
                 a.DocumentChanged += (s, e) => Live.OnDocumentChanged(e);
                 uiapp.ApplicationClosing += (s, e) => { try { Live?.Stop(); } catch { } };
                 SelfTest.Init();
+                Updater.Start();
                 Log.Info($"Team Hub {Version} loaded in Revit {RevitVersion} (pyRevit)");
                 return Version;
             }
