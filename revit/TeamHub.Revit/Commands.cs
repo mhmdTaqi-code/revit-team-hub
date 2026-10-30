@@ -89,11 +89,11 @@ namespace TeamHub.Revit
 
     static class Ui
     {
-        public static IntPtr Owner(ExternalCommandData d) => d.Application.MainWindowHandle;
+        public static IntPtr Owner(Ctx d) => d.Application.MainWindowHandle;
 
         public static void Info(string text, string title = "Team Hub") => TaskDialog.Show(title, text);
 
-        public static bool RequireLogin(ExternalCommandData d)
+        public static bool RequireLogin(Ctx d)
         {
             if (App.Settings.LoggedIn && App.Hub != null) return true;
             return CmdLogin.ShowLogin(d);
@@ -131,7 +131,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdPane : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             try { d.Application.GetDockablePane(App.PaneId).Show(); App.Pane.Refresh(); }
             catch (Exception ex) { Log.Error("pane", ex); }
@@ -142,7 +145,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdLogin : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             if (App.Settings.LoggedIn)
             {
@@ -170,7 +176,7 @@ namespace TeamHub.Revit
             return Result.Succeeded;
         }
 
-        public static bool ShowLogin(ExternalCommandData d)
+        public static bool ShowLogin(Ctx d)
         {
             var f = new Form("Team Hub — تسجيل الدخول", Ui.Owner(d))
                 .Text("عنوان السيرفر تاخذه من صاحب السيرفر، مثل http://26.x.x.x:8787. إذا تشتغل من البيت، خلي Radmin VPN شغال.", muted: true)
@@ -208,7 +214,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdJoin : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             try
             {
@@ -257,6 +266,19 @@ namespace TeamHub.Revit
                 if (td.Show() == TaskDialogResult.CommandLink1) CmdVersionHelp.ShowHelp();
                 return Result.Cancelled;
             }
+            if (HostedCentral.IsHosted(central))
+            {
+                // Central lives on the server: download my copy of it (only if newer).
+                var file = HostedCentral.CentralFile(name, central);
+                try { HostedCentral.EnsureLatest(App.Hub, pid, file).GetAwaiter().GetResult(); }
+                catch (Exception ex)
+                {
+                    Log.Error("central download", ex);
+                    Ui.Info("ما كدرت أحمّل الملف الرئيسي من السيرفر:\n" + ex.Message);
+                    return Result.Failed;
+                }
+                central = file;
+            }
             if (string.IsNullOrEmpty(central) || !File.Exists(central))
             {
                 Ui.Info(Ui.CentralUnreachableHelp(central));
@@ -302,7 +324,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdCreate : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             try
             {
@@ -316,41 +341,46 @@ namespace TeamHub.Revit
                 }
                 var doc = uidoc.Document;
                 var title = Path.GetFileNameWithoutExtension(doc.Title);
-                string central;
                 bool already = doc.IsWorkshared && !doc.IsDetached;
-                if (already)
-                    central = ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath());
-                else
-                    central = $@"\\{Ui.ServerHost()}\TeamHubRevit\{Ui.SafeName(title)}.rvt";
-
                 var f = new Form("Team Hub — مشروع فريق جديد", Ui.Owner(d))
                     .Text(already
                         ? "هذا الملف مشترك (Workshared) من قبل. راح أسجل ملفه الرئيسي بالسيرفر حتى الفريق ينضم."
-                        : "راح أحول هذا الملف لمشروع فريق: أشغّل العمل المشترك (Worksharing)، وأحفظ الملف الرئيسي بالفولدر المشترك على السيرفر، وأفتحلك نسخة محلية تشتغل عليها.", muted: true)
+                        : "راح أرفع هذا الملف للسيرفر كملف رئيسي للفريق (مثل SketchUp): الفريق ينزّله من «انضمام لمشروع»، " +
+                          "والمزامنة تمر عن طريق السيرفر. ما يحتاج فولدر مشترك. ملفك الأصلي يبقى مثل ما هو.", muted: true)
                     .Field("name", "اسم المشروع", title)
-                    .Field("central", "مكان الملف الرئيسي (لازم كل الفريق يوصله)", central, ltr: true)
                     .Text($"الإصدار: Revit {App.RevitVersion}. كل الفريق لازم يشتغل بنفس الإصدار.", muted: true)
                     .Buttons("إنشاء");
                 if (!f.Ask()) return Result.Cancelled;
                 var name = f["name"];
-                central = f["central"];
-                if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(central)) return Result.Cancelled;
+                if (string.IsNullOrEmpty(name)) return Result.Cancelled;
 
-                if (!already)
+                ApiResult r;
+                if (already)
                 {
-                    var dir = Path.GetDirectoryName(central);
-                    if (!Directory.Exists(dir)) { Ui.Info(Ui.CentralUnreachableHelp(central)); return Result.Failed; }
-                    if (File.Exists(central)) { Ui.Info("أكو ملف بنفس الاسم بالفولدر المشترك. غيّر الاسم."); return Result.Cancelled; }
+                    var existing = ModelPathUtils.ConvertModelPathToUserVisiblePath(doc.GetWorksharingCentralModelPath());
+                    r = App.Hub.Post("/api/projects", new { name, kind = "revit", central_path = existing, revit_version = App.RevitVersion })
+                               .GetAwaiter().GetResult();
+                    if (!r.Ok) { Ui.Info("السيرفر ما سجل المشروع: " + r.Error); return Result.Failed; }
+                }
+                else
+                {
+                    r = App.Hub.Post("/api/projects", new { name, kind = "revit", hosted = true, revit_version = App.RevitVersion })
+                               .GetAwaiter().GetResult();
+                    if (!r.Ok) { Ui.Info("السيرفر ما سجل المشروع: " + r.Error); return Result.Failed; }
+                    var pid = r.Data["project"]["id"].GetValue<long>();
+                    var central = HostedCentral.CentralFile(name, r.Data["project"]["central_path"].GetValue<string>());
+                    // A project folder with this name may hold an older central: start clean.
+                    foreach (var old in Directory.GetFileSystemEntries(Path.GetDirectoryName(central)))
+                    {
+                        if (Directory.Exists(old)) Directory.Delete(old, true); else File.Delete(old);
+                    }
                     if (doc.IsModified && !string.IsNullOrEmpty(doc.PathName)) doc.Save();
                     if (!doc.IsWorkshared) doc.EnableWorksharing("Shared Levels and Grids", "Workset1");
-                    var sao = new SaveAsOptions { OverwriteExistingFile = false };
+                    var sao = new SaveAsOptions { OverwriteExistingFile = true };
                     sao.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
                     doc.SaveAs(central, sao);
+                    HostedCentral.Upload(App.Hub, pid, central, 0).GetAwaiter().GetResult();
                 }
-
-                var r = App.Hub.Post("/api/projects", new { name, kind = "revit", central_path = central, revit_version = App.RevitVersion })
-                                .GetAwaiter().GetResult();
-                if (!r.Ok) { Ui.Info("الملف الرئيسي انحفظ، بس السيرفر ما سجل المشروع: " + r.Error); return Result.Failed; }
 
                 // Work in a local copy, never directly in central. Revit can't open a local
                 // while its central is open, and can't close the active document, so step
@@ -371,7 +401,7 @@ namespace TeamHub.Revit
                 {
                     res = CmdJoin.Join(d.Application, r.Data["project"]);
                 }
-                Ui.Info($"تم! مشروع «{name}» جاهز.\nالفريق يدوس «انضمام لمشروع» ويختاره.\nالملف الرئيسي: {central}");
+                Ui.Info($"تم! مشروع «{name}» جاهز.\nالفريق يدوس «انضمام لمشروع» ويختاره.");
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -386,7 +416,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdSyncNow : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             if (App.Live.Session == null) { Ui.Info("مو متصل بمشروع فريق. افتح المشروع من «انضمام لمشروع»."); return Result.Cancelled; }
             App.Live.SyncNow();
@@ -397,13 +430,16 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdLiveToggle : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             App.Settings.Live = !App.Settings.Live;
             App.Settings.Save();
             App.Pane.Refresh();
             Ui.Info(App.Settings.Live
-                ? $"اللايف شغال: تعديلاتك تتزامن وحدها بعد {App.Settings.IdleSeconds:0} ثواني من توكف، وتعديلات الفريق تظهر عندك وحدها."
+                ? $"اللايف شغال: كل {App.Settings.SyncIntervalSeconds:0} ثانية تعديلاتك تنرفع وتعديلات الفريق تنزل عندك، سوة، وبس من توكف لحظة حتى ما تتقطع بشغلك."
                 : "اللايف متوقف. زامن يدوي من «مزامنة هسه».");
             return Result.Succeeded;
         }
@@ -412,7 +448,10 @@ namespace TeamHub.Revit
     [Transaction(TransactionMode.Manual)]
     public class CmdVersionHelp : IExternalCommand
     {
-        public Result Execute(ExternalCommandData d, ref string message, ElementSet elements)
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
         {
             ShowHelp();
             return Result.Succeeded;
@@ -433,6 +472,36 @@ namespace TeamHub.Revit
             td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "فتح rvtconvert.com");
             td.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "تمام");
             if (td.Show() == TaskDialogResult.CommandLink1) App.OpenUrl("https://rvtconvert.com/");
+        }
+    }
+
+    /// <summary>What a command needs from Revit — built from ExternalCommandData
+    /// (add-in buttons) or from the UIApplication pyRevit hands its scripts.</summary>
+    public class Ctx
+    {
+        public UIApplication Application { get; }
+        public Ctx(UIApplication app) { Application = app; }
+    }
+
+    /// <summary>The pyRevit extension's buttons call these (TeamHub.extension).</summary>
+    public static class PyRevit
+    {
+        public static string Run(string command, UIApplication app)
+        {
+            var message = "";
+            var d = new Ctx(app);
+            var r = command switch
+            {
+                "pane" => CmdPane.Run(d, ref message),
+                "join" => CmdJoin.Run(d, ref message),
+                "sync" => CmdSyncNow.Run(d, ref message),
+                "live" => CmdLiveToggle.Run(d, ref message),
+                "create" => CmdCreate.Run(d, ref message),
+                "login" => CmdLogin.Run(d, ref message),
+                "versions" => CmdVersionHelp.Run(d, ref message),
+                _ => Result.Failed,
+            };
+            return r == Result.Failed && !string.IsNullOrEmpty(message) ? message : r.ToString();
         }
     }
 }

@@ -19,11 +19,18 @@ namespace TeamHub.Revit
         public string ProjectName;
         public string CentralPath;
         public string ProjectVersion;
+        /// <summary>Central lives on the Team Hub server; CentralPath is my copy of it.</summary>
+        public bool Hosted;
+        public int CentralRev;
 
         public volatile bool Dirty;
         public volatile bool PendingReload;
         public DateTime LastChangeUtc = DateTime.UtcNow;
         public DateTime LastSyncUtc;
+        /// <summary>Last round (sync or reload) — the next one is due an interval later.</summary>
+        public DateTime LastRoundUtc;
+        /// <summary>"Sync now" button: skip the wait for the next round.</summary>
+        public volatile bool ForceNow;
         public DateTime LastCheckUtc = DateTime.UtcNow;
         public DateTime NextAttemptUtc;
         public int Added, Modified, Deleted;
@@ -158,6 +165,7 @@ namespace TeamHub.Revit
             var s = _s;
             if (s == null) return;
             s.Dirty = true;
+            s.ForceNow = true;
             s.LastChangeUtc = DateTime.MinValue;
             s.NextAttemptUtc = DateTime.MinValue;
             Tick();
@@ -176,17 +184,25 @@ namespace TeamHub.Revit
                 var now = DateTime.UtcNow;
                 if (now < s.NextAttemptUtc) return;
 
+                // Rounds, not every pause: at most one sync/reload per interval
+                // (default 30 s), and only once I've stopped editing for a moment,
+                // so Revit never stalls in the middle of my work. A round sends
+                // my changes and brings the team's (Synchronize does both).
                 var work = Work.None;
-                if (s.Dirty && (now - s.LastChangeUtc).TotalSeconds >= App.Settings.IdleSeconds) work = Work.Sync;
-                else if (s.PendingReload && !s.Dirty && (now - s.LastChangeUtc).TotalSeconds >= 1.5) work = Work.Reload;
+                var due = s.ForceNow || (now - s.LastRoundUtc).TotalSeconds >= App.Settings.SyncIntervalSeconds;
+                var quiet = s.ForceNow || (now - s.LastChangeUtc).TotalSeconds >= App.Settings.IdleSeconds;
+                if (due && quiet && s.Dirty) work = Work.Sync;
+                else if (due && quiet && s.PendingReload) work = Work.Reload;
                 else if (!hub.Connected && !s.Dirty && (now - s.LastCheckUtc).TotalSeconds >= 20) work = Work.Check;
                 if (work == Work.None) return;
+                s.ForceNow = false;
 
                 if (work == Work.Check)
                 {
-                    // Hub is down: ask Revit directly whether central has news.
+                    // Hub is down: ask Revit directly whether central has news
+                    // (a hosted central only changes through the hub).
                     s.LastCheckUtc = now;
-                    Grant(work, noTurn: true);
+                    if (!s.Hosted) Grant(work, noTurn: true);
                     return;
                 }
                 RequestTurn(s, hub, work);
@@ -224,8 +240,15 @@ namespace TeamHub.Revit
                     }
                     else if (r.Status == 0)
                     {
+                        if (s.Hosted)
+                        {
+                            // Central lives on the server: wait for it (my work stays in my local file).
+                            s.NextAttemptUtc = DateTime.UtcNow.AddSeconds(5);
+                            s.LastError = "السيرفر مو متصل. تعديلاتك محفوظة بملفك وراح تتزامن أول ما يرجع.";
+                            SetState(s, "error");
+                        }
                         // Server unreachable: still sync straight with central so no work is lost.
-                        Grant(work, noTurn: true);
+                        else Grant(work, noTurn: true);
                     }
                     else
                     {
@@ -302,6 +325,8 @@ namespace TeamHub.Revit
                 }
 
                 SetState(s, work == Work.Sync ? "syncing" : "reloading");
+                // Hosted: my copy of central must be the server's newest first.
+                if (s.Hosted) s.CentralRev = HostedCentral.EnsureLatest(_hub, s.ProjectId, s.CentralPath).GetAwaiter().GetResult();
                 if (work == Work.Sync)
                 {
                     var twc = new TransactWithCentralOptions();
@@ -324,6 +349,8 @@ namespace TeamHub.Revit
                         UserWorksets = false,
                     });
                     doc.SynchronizeWithCentral(twc, swc);
+                    // Hosted: the new central goes to the server before the turn ends.
+                    if (s.Hosted) s.CentralRev = UploadCentral(s);
                     s.Dirty = false;
                     s.Added = s.Modified = s.Deleted = 0;
                 }
@@ -333,6 +360,7 @@ namespace TeamHub.Revit
                 }
                 s.PendingReload = false;
                 s.LastSyncUtc = DateTime.UtcNow;
+                s.LastRoundUtc = s.LastSyncUtc;
                 s.LastDuration = sw.Elapsed;
                 s.LastError = null;
                 s.Failures = 0;
@@ -369,6 +397,21 @@ namespace TeamHub.Revit
             }
         }
 
+        // The turn is mine until this succeeds, so a short network hiccup is
+        // retried right here (nobody else can sync in between).
+        int UploadCentral(LiveSession s)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                try { return HostedCentral.Upload(_hub, s.ProjectId, s.CentralPath, s.CentralRev).GetAwaiter().GetResult(); }
+                catch (Exception ex) when (attempt < 3)
+                {
+                    Log.Error($"central upload attempt {attempt}", ex);
+                    Thread.Sleep(2000);
+                }
+            }
+        }
+
         void EndTurn(LiveSession s, bool ok, Work work, bool noTurn, int added = 0, int modified = 0, int deleted = 0, long ms = 0)
         {
             if (work == Work.Check) return;
@@ -376,8 +419,9 @@ namespace TeamHub.Revit
             if (hub == null) return;
             if (noTurn && !ok) return;
             var kind = work == Work.Sync ? "sync" : "reload";
+            var centralRev = s.Hosted ? s.CentralRev : 0;
             Task.Run(() => hub.Post($"/api/projects/{s.ProjectId}/revit/sync/end",
-                new { ok, kind, duration_ms = ms, added, modified, deleted }));
+                new { ok, kind, duration_ms = ms, added, modified, deleted, central_rev = centralRev }));
             if (ok && work == Work.Sync)
                 AddActivity(App.Settings.DisplayName, null, $"زامنت تعديلاتك ({added + modified + deleted} تغيير، {ms / 1000.0:0.0} ثانية)");
         }

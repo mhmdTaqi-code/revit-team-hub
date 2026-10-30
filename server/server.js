@@ -262,6 +262,8 @@ function versionLess(a, b) {
 }
 
 function requireCurrentPlugin(ctx) {
+  // The minimum version is the SketchUp plugin's; other apps carry their own.
+  if (['photoshop', 'revit'].includes(String(ctx.req.headers['x-teamhub-client'] || ''))) return;
   const v = ctx.req.headers['x-teamhub-plugin'];
   if (versionLess(v, MIN_WRITER_PLUGIN)) {
     throw httpError(426, 'update_required', { min: MIN_WRITER_PLUGIN, message: 'حدّث بلكن Team Hub من لوحة الفريق (زر تحديث) وأعد فتح SketchUp' });
@@ -418,11 +420,13 @@ function waitForEvent(pid, ms) {
   });
 }
 
-function emit(pid, type, payload, userId) {
+// `live` is added to the live (WebSocket) message only, never stored: e.g.
+// Photoshop tile pixels, which clients fetch again if they missed them.
+function emit(pid, type, payload, userId, live) {
   const seq = q.bumpSeq.get(pid).seq;
   const at = now();
   q.insertEvent.run(pid, seq, type, JSON.stringify(payload), userId ?? null, at);
-  const msg = { type, seq, payload, user: userId ? userBrief(userId) : null, at };
+  const msg = { type, seq, payload: live ? { ...payload, ...live } : payload, user: userId ? userBrief(userId) : null, at };
   // Broadcast after the surrounding transaction has committed.
   setImmediate(() => { broadcast(pid, msg); wakeWaiters(pid); });
   return seq;
@@ -836,12 +840,14 @@ route('POST', '/api/projects', async (ctx) => {
   const r = q.insertProject.run(name.slice(0, 120), ctx.user.id, now());
   const id = Number(r.lastInsertRowid);
   if (b.kind === 'revit') {
-    const central = String(b.central_path || '').trim();
+    // hosted: central lives on this server (revit_hosted.js), no file share.
+    const central = b.hosted ? `hub:${name.replace(/[\\/:*?"<>|]/g, '_').slice(0, 100)}.rvt` : String(b.central_path || '').trim();
     const version = String(b.revit_version || '').trim();
     if (!central || !/^20\d\d$/.test(version)) throw httpError(400, 'central_path_and_revit_version_required');
     db.prepare("UPDATE projects SET kind = 'revit', central_path = ?, revit_version = ? WHERE id = ?")
       .run(central.slice(0, 400), version, id);
   }
+  if (b.kind === 'photoshop') db.prepare("UPDATE projects SET kind = 'photoshop' WHERE id = ?").run(id);
   return { project: q.project.get(id) };
 });
 
@@ -852,6 +858,23 @@ route('PATCH', '/api/projects/:pid', async (ctx) => {
   if (b.name) db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(String(b.name).slice(0, 120), p.id);
   if (b.archived != null) db.prepare('UPDATE projects SET archived = ? WHERE id = ?').run(b.archived ? 1 : 0, p.id);
   return { project: q.project.get(p.id) };
+});
+
+// Admin: remove a project from everyone's list. Nothing is destroyed: the
+// project is archived and its shared file moved to files/deleted/.
+route('DELETE', '/api/projects/:pid', (ctx) => {
+  requireRole(ctx.user, 'admin');
+  const p = getProject(ctx.params.pid);
+  db.prepare('UPDATE projects SET archived = 1 WHERE id = ?').run(p.id);
+  const f = sharedFilePath(p.id);
+  if (fs.existsSync(f)) {
+    const dir = path.join(FILES_DIR, 'deleted');
+    fs.mkdirSync(dir, { recursive: true });
+    const keep = path.join(dir, `${Date.now()}_${path.basename(f)}`);
+    fs.renameSync(f, keep);
+    if (fs.existsSync(`${f}.json`)) fs.renameSync(`${f}.json`, `${keep}.json`);
+  }
+  return { ok: true };
 });
 
 route('GET', '/api/ping', () => ({ t: now() }));
@@ -1082,7 +1105,7 @@ function sharedFileInfo(p) {
   let meta = {};
   try { meta = JSON.parse(fs.readFileSync(`${f}.json`, 'utf8')); } catch { /* none */ }
   return { size: fs.statSync(f).size, name: meta.name || p.name, uploaded_at: meta.uploaded_at, uploaded_by: meta.uploaded_by,
-    sketchup: meta.sketchup || null, chunk: 2 * 1024 * 1024 };
+    sketchup: meta.sketchup || null, app: meta.app || null, seq: meta.seq ?? null, chunk: 2 * 1024 * 1024 };
 }
 
 route('POST', '/api/projects/:pid/file/chunk', async (ctx) => {
@@ -1101,6 +1124,13 @@ route('POST', '/api/projects/:pid/file/chunk', async (ctx) => {
     b.upload_id = crypto.randomBytes(9).toString('hex');
     uploads.set(b.upload_id, up);
   }
+  // A SketchUp project's file can be replaced only by an admin or whoever
+  // created the project (a teammate's newer-version copy once replaced the
+  // owner's and nobody on an older SketchUp could open the project).
+  if (index === 0 && (p.kind || 'sketchup') === 'sketchup' && sharedFileInfo(p) &&
+      ctx.user.role !== 'admin' && p.created_by !== ctx.user.id) {
+    throw httpError(403, 'only_owner_can_replace');
+  }
   if (!up || up.pid !== p.id || up.user !== ctx.user.id) throw httpError(400, 'unknown_upload');
   if (index !== up.next) throw httpError(409, 'wrong_chunk', { expected: up.next });
   fs.appendFileSync(up.path, buf);
@@ -1112,6 +1142,10 @@ route('POST', '/api/projects/:pid/file/chunk', async (ctx) => {
     fs.writeFileSync(`${dest}.json`, JSON.stringify({
       name: String(b.name || p.name).slice(0, 200), uploaded_at: now(), uploaded_by: ctx.user.id,
       sketchup: b.sketchup ? String(b.sketchup).slice(0, 40) : null,
+      app: b.app ? String(b.app).slice(0, 40) : null,
+      // Photoshop: everything up to this event is already inside the file
+      // (the plugin says how far the copy it saved goes).
+      seq: b.seq != null && Number.isFinite(Number(b.seq)) ? Number(b.seq) : getProject(p.id).seq,
     }));
     tx(() => emit(p.id, 'shared_file', { size: fs.statSync(dest).size, name: b.name || p.name }, ctx.user.id));
     return { ok: true, done: true, file: sharedFileInfo(p) };
@@ -1288,6 +1322,7 @@ route('POST', '/api/projects/:pid/revit/sync/end', async (ctx) => {
     duration_ms: Number(b.duration_ms) || 0,
     added: Number(b.added) || 0, modified: Number(b.modified) || 0, deleted: Number(b.deleted) || 0,
     note: b.note ? String(b.note).slice(0, 200) : null,
+    central_rev: Number(b.central_rev) || null, // hosted projects: the package to download
   };
   const seq = tx(() => emit(p.id, 'revit_sync', payload, ctx.user.id));
   backupCentral(p);
@@ -1352,10 +1387,17 @@ route('GET', '/api/projects/:pid/revit/backups', (ctx) => {
   return { central_local: centralLocalPath(p), backups: list, folder: root };
 });
 
+require('./revit_hosted').install({ route, db, DATA_DIR, getRevitProject, requireRole, readJson, httpError, now, syncTurns,
+  SYNC_LEASE_MS, publicUser });
+
 // ---------------------------------------------------------------- static files
 
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.ico': 'image/x-icon' };
+
+// ---------------------------------------------------------------- Photoshop
+
+require('./photoshop').install({ db, route, tx, emit, getProject, requireRole, readJson, httpError, now });
 
 function serveStatic(req, res, url) {
   let rel = decodeURIComponent(url.pathname);
@@ -1376,8 +1418,8 @@ function serveStatic(req, res, url) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-TeamHub-Plugin, X-TeamHub-Client');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
   const fileMatch = /^\/download\/project\/(\d+)\.skp$/.exec(url.pathname);
@@ -1413,7 +1455,8 @@ const server = http.createServer(async (req, res) => {
     res.end(rbz);
     return;
   }
-  const DOWNLOADS = { '/download/su_team_hub.rbz': 'su_team_hub.rbz', '/download/teamhub_revit.zip': 'teamhub_revit.zip' };
+  const DOWNLOADS = { '/download/su_team_hub.rbz': 'su_team_hub.rbz', '/download/teamhub_revit.zip': 'teamhub_revit.zip',
+    '/download/teamhub_photoshop.ccx': 'teamhub_photoshop.ccx' };
   if (DOWNLOADS[url.pathname] && req.method === 'GET') {
     // Public on purpose: a new member needs the plugin before they have an account set up.
     const file = path.join(PLUGIN_DIR, DOWNLOADS[url.pathname]);

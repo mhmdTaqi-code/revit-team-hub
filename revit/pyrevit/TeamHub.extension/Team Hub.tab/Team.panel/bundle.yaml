@@ -1,0 +1,10 @@
+layout:
+  - Pane
+  - Join
+  - SyncNow
+  - Live
+  - --------
+  - Create
+  - Login
+  - Versions
+title: الفريق

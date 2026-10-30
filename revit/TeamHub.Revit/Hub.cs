@@ -21,7 +21,10 @@ namespace TeamHub.Revit
         public string DisplayName { get; set; } = "";
         public string Role { get; set; } = "";
         public bool Live { get; set; } = true;
-        public double IdleSeconds { get; set; } = 5;
+        /// <summary>Quiet time: a round waits until I've stopped editing this long.</summary>
+        public double IdleSeconds { get; set; } = 3;
+        /// <summary>One round (send mine + bring the team's) at most this often.</summary>
+        public double SyncIntervalSeconds { get; set; } = 30;
         /// <summary>Local file path (lower-case) → hub project id.</summary>
         public Dictionary<string, long> LocalFiles { get; set; } = new Dictionary<string, long>();
 

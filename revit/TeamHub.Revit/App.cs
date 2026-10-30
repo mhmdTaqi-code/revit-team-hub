@@ -29,27 +29,49 @@ namespace TeamHub.Revit
         public static string RevitUser { get; private set; } = "";
         public static UIControlledApplication UiApp { get; private set; }
 
+        // Team Hub runs once per Revit session, whichever way it was loaded
+        // (pyRevit extension, or the old .addin manifest) — never twice.
+        const string StartedKey = "TeamHub.Revit.Started";
+
+        static bool AlreadyStarted()
+        {
+            if (AppDomain.CurrentDomain.GetData(StartedKey) is string running)
+            {
+                Log.Info($"Team Hub {Version} not started again: already running ({running})");
+                return true;
+            }
+            AppDomain.CurrentDomain.SetData(StartedKey, $"{Version} from {Assembly.GetExecutingAssembly().Location}");
+            return false;
+        }
+
+        static App _instance;
+
+        static void Init(string revitVersion, Action<TeamPane> registerPane)
+        {
+            Settings = Settings.Load();
+            RevitVersion = revitVersion;
+            Live = new LiveSync { RevitVersion = RevitVersion };
+            Pane = new TeamPane();
+            registerPane(Pane);
+            Live.Changed += () => Pane.Refresh();
+            if (Settings.LoggedIn) Hub = new HubClient(Settings.Server, Settings.Token);
+        }
+
         public Result OnStartup(UIControlledApplication app)
         {
             try
             {
+                if (AlreadyStarted()) return Result.Succeeded;
+                _instance = this;
                 UiApp = app;
-                Settings = Settings.Load();
-                RevitVersion = app.ControlledApplication.VersionNumber;
-                Live = new LiveSync { RevitVersion = RevitVersion };
-                Pane = new TeamPane();
-                app.RegisterDockablePane(PaneId, "Team Hub", Pane);
-                Live.Changed += () => Pane.Refresh();
-
+                Init(app.ControlledApplication.VersionNumber, p => app.RegisterDockablePane(PaneId, "Team Hub", p));
                 BuildRibbon(app);
-
                 app.ControlledApplication.DocumentOpening += OnDocumentOpening;
                 app.ControlledApplication.DocumentOpened += OnDocumentOpened;
                 app.ControlledApplication.DocumentClosing += OnDocumentClosing;
                 app.ControlledApplication.DocumentChanged += (s, e) => Live.OnDocumentChanged(e);
-                if (Settings.LoggedIn) Hub = new HubClient(Settings.Server, Settings.Token);
                 SelfTest.Init();
-                Log.Info($"Team Hub {Version} loaded in Revit {RevitVersion}");
+                Log.Info($"Team Hub {Version} loaded in Revit {RevitVersion} (add-in)");
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -63,6 +85,35 @@ namespace TeamHub.Revit
         {
             try { Live?.Stop(); } catch { }
             return Result.Succeeded;
+        }
+
+        /// <summary>
+        /// Entry point for the pyRevit extension (startup.py). pyRevit loads this
+        /// DLL itself, so there is no .addin manifest and no unsigned-add-in prompt;
+        /// the ribbon buttons are the extension's bundles (see PyRevit.Run).
+        /// </summary>
+        public static string StartFromPyRevit(UIApplication uiapp)
+        {
+            try
+            {
+                if (AlreadyStarted()) return "already running";
+                _instance = new App();
+                Init(uiapp.Application.VersionNumber, p => uiapp.RegisterDockablePane(PaneId, "Team Hub", p));
+                var a = uiapp.Application;
+                a.DocumentOpening += _instance.OnDocumentOpening;
+                a.DocumentOpened += _instance.OnDocumentOpened;
+                a.DocumentClosing += _instance.OnDocumentClosing;
+                a.DocumentChanged += (s, e) => Live.OnDocumentChanged(e);
+                uiapp.ApplicationClosing += (s, e) => { try { Live?.Stop(); } catch { } };
+                SelfTest.Init();
+                Log.Info($"Team Hub {Version} loaded in Revit {RevitVersion} (pyRevit)");
+                return Version;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("pyRevit startup", ex);
+                return "error: " + ex.Message;
+            }
         }
 
         public static void SetHub(HubClient hub)
@@ -187,8 +238,11 @@ namespace TeamHub.Revit
                     var p = projects?.FirstOrDefault(x =>
                         x?["kind"]?.GetValue<string>() == "revit" &&
                         ((knownPid != 0 && x["id"]?.GetValue<long>() == knownPid) ||
-                         SamePath(x["central_path"]?.GetValue<string>(), central)));
+                         SamePath(x["central_path"]?.GetValue<string>(), central) ||
+                         (HostedCentral.IsHosted(x["central_path"]?.GetValue<string>()) &&
+                          SamePath(HostedCentral.CentralFile(x["name"]?.GetValue<string>(), x["central_path"].GetValue<string>()), central))));
                     if (p == null) return;
+                    var hosted = HostedCentral.IsHosted(p["central_path"]?.GetValue<string>());
                     Live.Start(new LiveSession
                     {
                         Doc = doc,
@@ -196,6 +250,8 @@ namespace TeamHub.Revit
                         ProjectName = p["name"]?.GetValue<string>(),
                         CentralPath = central,
                         ProjectVersion = p["revit_version"]?.GetValue<string>(),
+                        Hosted = hosted,
+                        CentralRev = hosted ? HostedCentral.LocalRev(central) : 0,
                     }, hub);
                 });
             }

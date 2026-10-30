@@ -24,6 +24,7 @@ namespace TeamHub.Revit
         ExternalEvent _event;
         Timer _timer;
         long _pid;
+        string _central;
         Document _doc;
 
         public static void Init()
@@ -33,6 +34,7 @@ namespace TeamHub.Revit
             var t = new SelfTest { _cfg = JsonNode.Parse(File.ReadAllText(path)) };
             t._out = t._cfg["out"].GetValue<string>();
             App.Settings.NoSave = true;
+            HostedCentral.RootOverride = t._cfg["central_dir"]?.GetValue<string>();
             t._event = ExternalEvent.Create(t);
             t._timer = new Timer(_ => t._event.Raise(), null, 3000, 1000);
             t.W($"init role={t.Role} revit={App.RevitVersion}");
@@ -84,7 +86,8 @@ namespace TeamHub.Revit
             App.Settings.DisplayName = r.Data["user"]["display_name"].GetValue<string>();
             App.Settings.Role = r.Data["user"]["role"].GetValue<string>();
             App.Settings.Live = true;
-            App.Settings.IdleSeconds = _cfg["idle"]?.GetValue<double>() ?? 5;
+            App.Settings.IdleSeconds = _cfg["idle"]?.GetValue<double>() ?? 3;
+            App.Settings.SyncIntervalSeconds = _cfg["interval"]?.GetValue<double>() ?? 30;
             hub.Token = App.Settings.Token;
             App.SetHub(hub);
             return true;
@@ -180,7 +183,7 @@ namespace TeamHub.Revit
                     break;
                 case 1:
                 {
-                    if (File.Exists(central)) File.Delete(central);
+                    // Like «مشروع فريق جديد»: the central goes to the server, no shared folder.
                     var doc = uiapp.Application.NewProjectDocument(UnitSystem.Metric);
                     using (var t = new Transaction(doc, "level"))
                     {
@@ -189,20 +192,22 @@ namespace TeamHub.Revit
                         t.Commit();
                     }
                     doc.EnableWorksharing("Shared Levels and Grids", "Workset1");
-                    var sao = new SaveAsOptions { OverwriteExistingFile = true };
-                    sao.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
-                    doc.SaveAs(central, sao);
-                    var r = App.Hub.Post("/api/projects", new { name = "اختبار Revit", kind = "revit", central_path = central, revit_version = App.RevitVersion })
+                    var r = App.Hub.Post("/api/projects", new { name = "اختبار Revit", kind = "revit", hosted = true, revit_version = App.RevitVersion })
                                   .GetAwaiter().GetResult();
                     _pid = r.Data["project"]["id"].GetValue<long>();
+                    _central = HostedCentral.CentralFile("اختبار Revit", r.Data["project"]["central_path"].GetValue<string>());
+                    var sao = new SaveAsOptions { OverwriteExistingFile = true };
+                    sao.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
+                    doc.SaveAs(_central, sao);
+                    var rev = HostedCentral.Upload(App.Hub, _pid, _central, 0).GetAwaiter().GetResult();
                     _doc = doc;
-                    Next($"central created + project {_pid} registered");
+                    Next($"project {_pid} created, central r{rev} uploaded to the server");
                     break;
                 }
                 case 2:
                     // Revit can't hold a central and its local in one session: close central first.
                     _doc.Close(false);
-                    OpenLocal(uiapp, central, S("local"));
+                    OpenLocal(uiapp, _central, S("local"));
                     Post("A:ready");
                     Next("central closed, local opened");
                     break;
@@ -283,15 +288,22 @@ namespace TeamHub.Revit
                     if (Seen("A:ready") == null) break;
                     var r = App.Hub.Get("/api/projects").GetAwaiter().GetResult();
                     var p = r.Data?["projects"]?.AsArray().LastOrDefault(x => x?["kind"]?.GetValue<string>() == "revit");
-                    if (p == null || !File.Exists(central)) break;
+                    if (p == null) break;
                     _pid = p["id"].GetValue<long>();
                     Next($"found project {_pid}");
                     break;
                 }
                 case 2:
-                    OpenLocal(uiapp, central, S("local"));
-                    Next($"local opened (walls={Walls(_doc)})");
+                {
+                    // Like «انضمام لمشروع»: download the central from the server, then a local copy.
+                    var p = App.Hub.Get("/api/projects").GetAwaiter().GetResult().Data["projects"].AsArray()
+                               .First(x => x["id"].GetValue<long>() == _pid);
+                    _central = HostedCentral.CentralFile("اختبار Revit", p["central_path"].GetValue<string>());
+                    var rev = HostedCentral.EnsureLatest(App.Hub, _pid, _central).GetAwaiter().GetResult();
+                    OpenLocal(uiapp, _central, S("local"));
+                    Next($"downloaded central r{rev} from the server, local opened (walls={Walls(_doc)})");
                     break;
+                }
                 case 3:
                     if (App.Live.Session == null) break;
                     Post("B:live");

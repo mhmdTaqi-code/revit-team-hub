@@ -1,0 +1,8 @@
+{
+  "type": "extension",
+  "rocket_mode_compatible": true,
+  "name": "TeamHub",
+  "description": "Team Hub: live team work on one Revit project (sync through the Team Hub server).",
+  "author": "mhmdTaqi-code",
+  "url": "https://github.com/mhmdTaqi-code/revit-team-hub"
+}
