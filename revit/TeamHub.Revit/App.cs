@@ -149,6 +149,7 @@ namespace TeamHub.Revit
             panel.AddItem(Btn("th_create", "مشروع\nفريق جديد", typeof(CmdCreate), "للمدير: يحول الملف المفتوح لمشروع فريق (ملف رئيسي مشترك)", "+", Color.FromRgb(107, 114, 128)));
             panel.AddItem(Btn("th_login", "الحساب", typeof(CmdLogin), "تسجيل الدخول لسيرفر Team Hub", "☺", Color.FromRgb(107, 114, 128)));
             panel.AddItem(Btn("th_versions", "مساعد\nالإصدارات", typeof(CmdVersionHelp), "إذا الفريق على إصدارات Revit مختلفة", "⇄", Color.FromRgb(107, 114, 128)));
+            panel.AddItem(Btn("th_update", "تحديث", typeof(CmdUpdate), "يشوف إذا أكو نسخة جديدة من Team Hub، ويحدّث إذا تريد", "↑", Color.FromRgb(2, 132, 199)));
         }
 
         static BitmapSource Icon(string glyph, Color color, int size)

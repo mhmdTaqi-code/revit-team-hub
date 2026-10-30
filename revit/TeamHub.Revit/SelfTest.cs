@@ -273,6 +273,16 @@ namespace TeamHub.Revit
                     if (theirs == null && Since < 60) break;
                     var mine = Fingerprint(_doc);
                     Check(theirs == mine, "WHOLE MODEL identical on A and B (every wall's exact x/y/z)");
+                    var expect = S("expect_update");
+                    if (expect != null)
+                    {
+                        // The server offers a newer version: it must only be offered...
+                        Check(Updater.Available == expect && Updater.Installed == null,
+                              $"update {expect} offered in the panel, nothing installed by itself (available={Updater.Available}, installed={Updater.Installed})");
+                        // ...and pressing «تحديث» installs it.
+                        var v = Updater.Install().GetAwaiter().GetResult();
+                        Check(v == expect, $"pressing Update installed {v}");
+                    }
                     W("A walls: " + mine);
                     if (theirs != mine) W("B walls: " + theirs);
                     W("DONE");

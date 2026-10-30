@@ -515,6 +515,49 @@ namespace TeamHub.Revit
         }
     }
 
+    [Transaction(TransactionMode.Manual)]
+    public class CmdUpdate : IExternalCommand
+    {
+        public Result Execute(ExternalCommandData data, ref string message, ElementSet elements) =>
+            Run(new Ctx(data.Application), ref message);
+
+        public static Result Run(Ctx d, ref string message)
+        {
+            if (string.IsNullOrEmpty(App.Settings.Server)) { Ui.Info("سجل دخول أول (الحساب)، حتى أعرف السيرفر."); return Result.Cancelled; }
+            if (Updater.Installed != null)
+            {
+                Ui.Info($"تحدّث لـ {Updater.Installed} ✓\nسكّر Revit وافتحه حتى يشتغل الجديد.");
+                return Result.Succeeded;
+            }
+            var available = Ui.RunWithProgress("Team Hub", "يشوف إذا أكو نسخة جديدة…", _ => Updater.Check());
+            if (available == null)
+            {
+                Ui.Info($"عندك آخر نسخة ({App.Version}).");
+                return Result.Succeeded;
+            }
+            var td = new TaskDialog("Team Hub")
+            {
+                MainInstruction = $"نسخة جديدة: {available}",
+                MainContent = $"عندك {App.Version}. التحديث ياخذ ثواني، ويشتغل من تفتح Revit المرة الجاية.",
+                CommonButtons = TaskDialogCommonButtons.Yes | TaskDialogCommonButtons.No,
+                DefaultButton = TaskDialogResult.Yes,
+            };
+            if (td.Show() != TaskDialogResult.Yes) return Result.Cancelled;
+            try
+            {
+                var v = Ui.RunWithProgress("Team Hub", "يحمّل التحديث…", _ => Updater.Install());
+                Ui.Info($"تحدّث لـ {v} ✓\nسكّر Revit وافتحه حتى يشتغل الجديد.");
+                return Result.Succeeded;
+            }
+            catch (Exception ex)
+            {
+                Log.Error("update", ex);
+                Ui.Info("ما كمل التحديث: " + ex.Message);
+                return Result.Failed;
+            }
+        }
+    }
+
     /// <summary>What a command needs from Revit — built from ExternalCommandData
     /// (add-in buttons) or from the UIApplication pyRevit hands its scripts.</summary>
     public class Ctx
@@ -539,6 +582,7 @@ namespace TeamHub.Revit
                 "create" => CmdCreate.Run(d, ref message),
                 "login" => CmdLogin.Run(d, ref message),
                 "versions" => CmdVersionHelp.Run(d, ref message),
+                "update" => CmdUpdate.Run(d, ref message),
                 _ => Result.Failed,
             };
             return r == Result.Failed && !string.IsNullOrEmpty(message) ? message : r.ToString();

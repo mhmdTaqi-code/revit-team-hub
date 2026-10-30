@@ -17,6 +17,9 @@ namespace TeamHub.Revit
         readonly TextBlock _title, _state, _detail, _warn;
         readonly StackPanel _team, _feed;
         readonly Button _liveBtn, _syncBtn;
+        readonly Border _updateBar;
+        readonly TextBlock _updateText;
+        readonly Button _updateBtn;
         readonly TextBox _chat;
         public string Warning { get; set; }
 
@@ -56,6 +59,29 @@ namespace TeamHub.Revit
             stack.Children.Add(_state);
             stack.Children.Add(_detail);
             stack.Children.Add(_warn);
+
+            // A newer version is on the server: offer it, install only on request.
+            _updateText = new TextBlock { TextWrapping = TextWrapping.Wrap, VerticalAlignment = VerticalAlignment.Center };
+            _updateBtn = MakeButton("تحديث", async () =>
+            {
+                try { await Updater.Install(); }
+                catch (Exception ex)
+                {
+                    Log.Error("update install", ex);
+                    Warning = "ما كمل التحديث: " + ex.Message;
+                }
+                Refresh();
+            });
+            var updateRow = new DockPanel();
+            DockPanel.SetDock(_updateBtn, Dock.Left);
+            updateRow.Children.Add(_updateBtn);
+            updateRow.Children.Add(_updateText);
+            _updateBar = new Border
+            {
+                Child = updateRow, Padding = new Thickness(8), Margin = new Thickness(0, 8, 0, 0), CornerRadius = new CornerRadius(4),
+                Background = new SolidColorBrush(Color.FromRgb(224, 242, 254)), Visibility = Visibility.Collapsed,
+            };
+            stack.Children.Add(_updateBar);
             stack.Children.Add(buttons);
             stack.Children.Add(Header("الفريق المتصل"));
             stack.Children.Add(_team);
@@ -149,6 +175,23 @@ namespace TeamHub.Revit
                 warn = $"المشروع على Revit {s.ProjectVersion} وانت على {App.RevitVersion}.";
             _warn.Text = warn ?? "";
             _warn.Visibility = string.IsNullOrEmpty(warn) ? Visibility.Collapsed : Visibility.Visible;
+
+            if (Updater.Installed != null)
+            {
+                _updateText.Text = $"تحدّث لـ {Updater.Installed} ✓ سكّر Revit وافتحه حتى يشتغل الجديد.";
+                _updateBtn.Visibility = Visibility.Collapsed;
+                _updateBar.Visibility = Visibility.Visible;
+            }
+            else if (Updater.Available != null)
+            {
+                _updateText.Text = Updater.Installing
+                    ? $"يحمّل النسخة {Updater.Available}…"
+                    : $"نسخة جديدة من Team Hub: {Updater.Available} (عندك {App.Version}).";
+                _updateBtn.IsEnabled = !Updater.Installing;
+                _updateBtn.Visibility = Visibility.Visible;
+                _updateBar.Visibility = Visibility.Visible;
+            }
+            else _updateBar.Visibility = Visibility.Collapsed;
 
             _liveBtn.Content = settings != null && settings.Live ? "⏸ إيقاف اللايف" : "▶ تشغيل اللايف";
             _liveBtn.IsEnabled = _syncBtn.IsEnabled = s != null;

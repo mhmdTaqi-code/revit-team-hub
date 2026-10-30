@@ -1,9 +1,9 @@
 # Revit Team Hub
 
-**Near-live team work on one Revit project, through a small server on your own PC — no shared folder, one-file install, updates itself.**
+**Near-live team work on one Revit project, through a small server on your own PC — no shared folder, one-file install, one-click updates.**
 Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs by itself** a few seconds after you stop editing, and everyone else's Revit **reloads the latest changes by itself**.
 
-- One-file install (`install.cmd`), no admin rights; **updates itself** from your server (which follows the newest GitHub release)
+- One-file install (`install.cmd`), no admin rights; new versions are **offered in the panel with an Update button** (your server follows the newest GitHub release)
 - The central model lives **on the Team Hub server** (like SketchUp Team Hub): upload once, the team downloads it — no Windows file share
 - Syncs in calm rounds: every 30 s your changes go up and the team's come down together — never in the middle of your work
 - Every sync is kept as a revision on the server (backups)
@@ -71,9 +71,9 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 4. **Team Hub ← الحساب:** عنوان السيرفر (`http://26.x.x.x:8787`) واسمك وكلمة سرك.
 5. **اسمك بـ Revit:** File ← Options ← General ← **Username**. لازم **كل واحد يكون اسمه مختلف**، وإلا ملكية العناصر تتلخبط.
 
-**التحديث تلقائي:** كل ما تطلع نسخة جديدة، سيرفرك ينزّلها من GitHub وحده،
-والإضافة عند كل واحد تتحدث من السيرفر لحالها (أول ما يفتح Revit، وكل 6 ساعات).
-النسخة الجديدة تشتغل من تفتح Revit المرة الجاية، ولوحة Team Hub تبلغك.
+**التحديث بضغطة زر:** كل ما تطلع نسخة جديدة، سيرفرك ينزّلها من GitHub وحده.
+بلوحة Team Hub يطلعلك «نسخة جديدة» وجنبه زر **تحديث** (أو زر **تحديث** بالشريط).
+ما يتنصب شي إلا من تدوس. النسخة الجديدة تشتغل من تفتح Revit المرة الجاية.
 
 ## الخطوة 3: بداية مشروع
 
@@ -92,6 +92,7 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 | **مشروع فريق جديد** | يرفع الملف المفتوح للسيرفر كمشروع فريق |
 | **الحساب** | تسجيل الدخول |
 | **مساعد الإصدارات** | إذا الفريق على إصدارات Revit مختلفة |
+| **تحديث** | يشوف إذا أكو نسخة جديدة، ويحدّث إذا تريد |
 
 ## الحمايات
 

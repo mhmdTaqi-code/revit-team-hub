@@ -11,11 +11,11 @@ using System.Threading.Tasks;
 namespace TeamHub.Revit
 {
     /// <summary>
-    /// Keeps Team Hub up to date by itself. When Revit starts (and every few
-    /// hours) it asks the team's server for the newest version; if it's newer,
-    /// it downloads it and puts it in place quietly. Revit has the running copy
-    /// loaded already, so the new one starts the next time Revit opens.
-    /// Works for both ways of installing: the .addin add-in and the pyRevit extension.
+    /// Offers updates. When Revit starts (and every few hours) it asks the
+    /// team's server for the newest version; if there's a newer one, the Team
+    /// Hub panel shows it with an "Update" button — nothing is installed until
+    /// the user presses it. Revit has the running copy loaded, so the new one
+    /// starts the next time Revit opens.
     /// </summary>
     public static class Updater
     {
@@ -23,6 +23,13 @@ namespace TeamHub.Revit
         static Timer _timer;
         static string _installed; // version already put in place this session
         static int _busy;
+        static JsonNode _offer;     // what the server offered
+
+        /// <summary>A newer version the server has (null when up to date).</summary>
+        public static string Available { get; private set; }
+        /// <summary>The version put in place this session (waits for a Revit restart).</summary>
+        public static string Installed => _installed;
+        public static bool Installing { get; private set; }
 
         /// <summary>pyRevit: the extension folder (set by teamhub_load.py).</summary>
         static string ExtensionDir =>
@@ -47,21 +54,46 @@ namespace TeamHub.Revit
             return false;
         }
 
-        public static async Task Check()
+        /// <summary>Ask the server what's newest; returns that version (or null).</summary>
+        public static async Task<string> Check()
         {
-            if (Interlocked.Exchange(ref _busy, 1) == 1) return;
+            if (Interlocked.Exchange(ref _busy, 1) == 1) return Available;
             try
             {
                 var server = HubClient.Normalize(App.Settings?.Server);
-                if (string.IsNullOrEmpty(server)) return;
+                if (string.IsNullOrEmpty(server)) return null;
                 using var res = await Http.GetAsync(server + "/api/revit/update").ConfigureAwait(false);
-                if (res.StatusCode == System.Net.HttpStatusCode.NotFound) return; // this server hands out no add-in
+                if (res.StatusCode == System.Net.HttpStatusCode.NotFound) return null; // this server hands out no add-in
                 res.EnsureSuccessStatusCode();
                 var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
                 var info = JsonNode.Parse(text);
                 var version = info?["version"]?.GetValue<string>();
-                if (!Newer(version, App.Version) || version == _installed) return;
+                if (!Newer(version, App.Version) || version == _installed) return null;
+                if (Available != version)
+                {
+                    Log.Info($"update available: {App.Version} -> {version}");
+                    App.Live?.AddActivity(null, null, $"نسخة جديدة من Team Hub ({version}) موجودة. دوس «تحديث» إذا تريدها.");
+                }
+                Available = version;
+                _offer = info;
+                App.Pane?.Refresh();
+                return version;
+            }
+            catch (Exception ex) { Log.Error("update check", ex); return null; }
+            finally { Interlocked.Exchange(ref _busy, 0); }
+        }
 
+        /// <summary>The user pressed Update: download it and put it in place.</summary>
+        public static async Task<string> Install()
+        {
+            var info = _offer;
+            var version = Available;
+            if (info == null || version == null) return null;
+            Installing = true;
+            App.Pane?.Refresh();
+            try
+            {
+                var server = HubClient.Normalize(App.Settings?.Server);
                 var ext = ExtensionDir;
                 if (ext != null && Directory.Exists(ext) && info["pyrevit"] != null)
                 {
@@ -74,16 +106,16 @@ namespace TeamHub.Revit
                     InstallAddinDll(zip);
                 }
                 _installed = version;
+                Available = null;
                 Log.Info($"update {App.Version} -> {version} installed; starts with the next Revit session");
                 App.Live?.AddActivity(null, null, $"تحدّث Team Hub لـ {version}. يشتغل من تفتح Revit المرة الجاية.");
-                if (App.Pane != null)
-                {
-                    App.Pane.Warning = $"تحدّث Team Hub لـ {version} ✓ — سكّر Revit وافتحه حتى يشتغل الجديد.";
-                    App.Pane.Refresh();
-                }
+                return version;
             }
-            catch (Exception ex) { Log.Error("update check", ex); }
-            finally { Interlocked.Exchange(ref _busy, 0); }
+            finally
+            {
+                Installing = false;
+                App.Pane?.Refresh();
+            }
         }
 
         // pyRevit: replace the extension's files. Nothing there is locked (the

@@ -84,6 +84,7 @@ namespace TeamHub.Revit
         volatile bool _raised;
         volatile bool _inOwnOp;
         volatile bool _ending;   // the hub hasn't confirmed my last turn is over yet
+        volatile bool _executing; // a granted round is running on Revit's thread
         string _lastStatus;
 
         public List<TeamMember> Online { get; private set; } = new List<TeamMember>();
@@ -178,8 +179,14 @@ namespace TeamHub.Revit
 
         // ------------------------------------------------------------ scheduler (background thread)
 
+        readonly object _tickLock = new object();
+
+        // Called from the timer, from hub messages and when a background download
+        // finishes — possibly at the same moment. Only one at a time decides,
+        // or two of them could both ask for a turn for the same round.
         void Tick()
         {
+            if (!Monitor.TryEnter(_tickLock)) return;
             try
             {
                 var s = _s;
@@ -189,7 +196,7 @@ namespace TeamHub.Revit
                 // still syncing, or before the hub has closed my previous turn
                 // (asking early renewed my own turn, and closing the old one then
                 // took the new one away → the upload was refused with no_turn).
-                if (_requesting || _raised || _granted != Work.None || _inOwnOp || _ending) return;
+                if (_requesting || _raised || _granted != Work.None || _inOwnOp || _executing || _ending) return;
                 var now = DateTime.UtcNow;
                 if (now < s.NextAttemptUtc) return;
 
@@ -243,6 +250,7 @@ namespace TeamHub.Revit
                 RequestTurn(s, hub, work);
             }
             catch (Exception ex) { Log.Error("tick", ex); }
+            finally { Monitor.Exit(_tickLock); }
         }
 
         void RequestTurn(LiveSession s, HubClient hub, Work work)
@@ -316,6 +324,12 @@ namespace TeamHub.Revit
 
         public void Execute(UIApplication app)
         {
+            try { ExecuteWork(app); }
+            finally { _executing = false; }
+        }
+
+        void ExecuteWork(UIApplication app)
+        {
             Work work;
             bool noTurn;
             lock (_gate)
@@ -324,6 +338,7 @@ namespace TeamHub.Revit
                 noTurn = _noTurn;
                 _granted = Work.None;
                 _raised = false;
+                _executing = work != Work.None; // set in the same step: Tick never sees a gap
             }
             var s = _s;
             if (work == Work.None || s == null) return;
