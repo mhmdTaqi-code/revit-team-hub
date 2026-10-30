@@ -34,7 +34,6 @@ namespace TeamHub.Revit
             var t = new SelfTest { _cfg = JsonNode.Parse(File.ReadAllText(path)) };
             t._out = t._cfg["out"].GetValue<string>();
             App.Settings.NoSave = true;
-            HostedCentral.RootOverride = t._cfg["central_dir"]?.GetValue<string>();
             t._event = ExternalEvent.Create(t);
             t._timer = new Timer(_ => t._event.Raise(), null, 3000, 1000);
             t.W($"init role={t.Role} revit={App.RevitVersion}");
@@ -46,7 +45,14 @@ namespace TeamHub.Revit
 
         void W(string msg)
         {
-            try { File.AppendAllText(_out, $"{DateTime.Now:HH:mm:ss.fff} [{Role}] {msg}{Environment.NewLine}"); } catch { }
+            // Two Revits append to the same file: retry a moment if the other one has it open.
+            for (var i = 0; i < 20; i++)
+            {
+                try { File.AppendAllText(_out, $"{DateTime.Now:HH:mm:ss.fff} [{Role}] {msg}{Environment.NewLine}"); return; }
+                catch (IOException) { Thread.Sleep(50); }
+                catch (Exception ex) { Log.Error("selftest log", ex); return; }
+            }
+            Log.Info($"SELFTEST [{Role}] {msg}");
         }
 
         void Next(string msg = null)
@@ -102,6 +108,8 @@ namespace TeamHub.Revit
             var opts = new OpenOptions();
             opts.SetOpenWorksetsConfiguration(new WorksetConfiguration(WorksetConfigurationOption.OpenAllWorksets));
             _doc = uiapp.OpenAndActivateDocument(ModelPathUtils.ConvertUserVisiblePathToModelPath(local), opts, false).Document;
+            var linked = ModelPathUtils.ConvertModelPathToUserVisiblePath(_doc.GetWorksharingCentralModelPath());
+            Check(App.SamePath(linked, central), $"my local syncs to the shared central path, the same on every PC ({linked})");
         }
 
         Wall AddWall(Document doc, double y)
@@ -195,7 +203,7 @@ namespace TeamHub.Revit
                     var r = App.Hub.Post("/api/projects", new { name = "اختبار Revit", kind = "revit", hosted = true, revit_version = App.RevitVersion })
                                   .GetAwaiter().GetResult();
                     _pid = r.Data["project"]["id"].GetValue<long>();
-                    _central = HostedCentral.CentralFile("اختبار Revit", r.Data["project"]["central_path"].GetValue<string>());
+                    _central = HostedCentral.CentralFile(_pid, r.Data["project"]["central_path"].GetValue<string>());
                     var sao = new SaveAsOptions { OverwriteExistingFile = true };
                     sao.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
                     doc.SaveAs(_central, sao);
@@ -298,7 +306,7 @@ namespace TeamHub.Revit
                     // Like «انضمام لمشروع»: download the central from the server, then a local copy.
                     var p = App.Hub.Get("/api/projects").GetAwaiter().GetResult().Data["projects"].AsArray()
                                .First(x => x["id"].GetValue<long>() == _pid);
-                    _central = HostedCentral.CentralFile("اختبار Revit", p["central_path"].GetValue<string>());
+                    _central = HostedCentral.CentralFile(_pid, p["central_path"].GetValue<string>());
                     var rev = HostedCentral.EnsureLatest(App.Hub, _pid, _central).GetAwaiter().GetResult();
                     OpenLocal(uiapp, _central, S("local"));
                     Next($"downloaded central r{rev} from the server, local opened (walls={Walls(_doc)})");

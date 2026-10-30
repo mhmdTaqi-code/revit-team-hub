@@ -242,7 +242,7 @@ namespace TeamHub.Revit
                         ((knownPid != 0 && x["id"]?.GetValue<long>() == knownPid) ||
                          SamePath(x["central_path"]?.GetValue<string>(), central) ||
                          (HostedCentral.IsHosted(x["central_path"]?.GetValue<string>()) &&
-                          SamePath(HostedCentral.CentralFile(x["name"]?.GetValue<string>(), x["central_path"].GetValue<string>()), central))));
+                          SamePath(HostedCentral.CentralFile(x["id"].GetValue<long>(), x["central_path"].GetValue<string>()), central))));
                     if (p == null) return;
                     var hosted = HostedCentral.IsHosted(p["central_path"]?.GetValue<string>());
                     Live.Start(new LiveSession

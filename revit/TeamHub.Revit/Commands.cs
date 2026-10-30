@@ -107,6 +107,46 @@ namespace TeamHub.Revit
             return dir;
         }
 
+        /// <summary>
+        /// Run network work off Revit's thread while a small progress window
+        /// keeps Revit responsive (no frozen "Not Responding" while downloading).
+        /// </summary>
+        public static T RunWithProgress<T>(string title, string text, Func<IProgress<double>, System.Threading.Tasks.Task<T>> work)
+        {
+            var label = new TextBlock { Text = text, Margin = new Thickness(16, 14, 16, 8), FontSize = 13 };
+            var bar = new System.Windows.Controls.ProgressBar { Minimum = 0, Maximum = 100, Height = 14, Margin = new Thickness(16, 0, 16, 16), IsIndeterminate = true };
+            var panel = new StackPanel();
+            panel.Children.Add(label);
+            panel.Children.Add(bar);
+            var win = new Window
+            {
+                Title = title, Content = panel, Width = 400, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterScreen, FlowDirection = FlowDirection.RightToLeft, Topmost = true,
+                ShowInTaskbar = false,
+            };
+            var dispatcher = win.Dispatcher;
+            var progress = new Reporter(f => dispatcher.BeginInvoke(new Action(() =>
+            {
+                bar.IsIndeterminate = false;
+                bar.Value = Math.Max(0, Math.Min(100, f * 100));
+                label.Text = $"{text}  {f * 100:0}%";
+            })));
+            win.Show();
+            var task = System.Threading.Tasks.Task.Run(() => work(progress));
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            task.ContinueWith(_ => frame.Continue = false);
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+            win.Close();
+            return task.GetAwaiter().GetResult();
+        }
+
+        sealed class Reporter : IProgress<double>
+        {
+            readonly Action<double> _a;
+            public Reporter(Action<double> a) { _a = a; }
+            public void Report(double value) => _a(value);
+        }
+
         public static string SafeName(string s) => string.Join("_", (s ?? "user").Split(Path.GetInvalidFileNameChars()));
 
         public static string ServerHost()
@@ -269,8 +309,8 @@ namespace TeamHub.Revit
             if (HostedCentral.IsHosted(central))
             {
                 // Central lives on the server: download my copy of it (only if newer).
-                var file = HostedCentral.CentralFile(name, central);
-                try { HostedCentral.EnsureLatest(App.Hub, pid, file).GetAwaiter().GetResult(); }
+                var file = HostedCentral.CentralFile(pid, central);
+                try { Ui.RunWithProgress("Team Hub", "يحمّل الملف الرئيسي من السيرفر…", p => HostedCentral.EnsureLatest(App.Hub, pid, file, p)); }
                 catch (Exception ex)
                 {
                     Log.Error("central download", ex);
@@ -368,7 +408,7 @@ namespace TeamHub.Revit
                                .GetAwaiter().GetResult();
                     if (!r.Ok) { Ui.Info("السيرفر ما سجل المشروع: " + r.Error); return Result.Failed; }
                     var pid = r.Data["project"]["id"].GetValue<long>();
-                    var central = HostedCentral.CentralFile(name, r.Data["project"]["central_path"].GetValue<string>());
+                    var central = HostedCentral.CentralFile(pid, r.Data["project"]["central_path"].GetValue<string>());
                     // A project folder with this name may hold an older central: start clean.
                     foreach (var old in Directory.GetFileSystemEntries(Path.GetDirectoryName(central)))
                     {
@@ -379,7 +419,7 @@ namespace TeamHub.Revit
                     var sao = new SaveAsOptions { OverwriteExistingFile = true };
                     sao.SetWorksharingOptions(new WorksharingSaveAsOptions { SaveAsCentral = true });
                     doc.SaveAs(central, sao);
-                    HostedCentral.Upload(App.Hub, pid, central, 0).GetAwaiter().GetResult();
+                    Ui.RunWithProgress("Team Hub", "يرفع الملف الرئيسي للسيرفر…", _ => HostedCentral.Upload(App.Hub, pid, central, 0));
                 }
 
                 // Work in a local copy, never directly in central. Revit can't open a local

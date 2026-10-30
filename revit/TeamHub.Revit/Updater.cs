@@ -54,7 +54,10 @@ namespace TeamHub.Revit
             {
                 var server = HubClient.Normalize(App.Settings?.Server);
                 if (string.IsNullOrEmpty(server)) return;
-                var text = await Http.GetStringAsync(server + "/api/revit/update").ConfigureAwait(false);
+                using var res = await Http.GetAsync(server + "/api/revit/update").ConfigureAwait(false);
+                if (res.StatusCode == System.Net.HttpStatusCode.NotFound) return; // this server hands out no add-in
+                res.EnsureSuccessStatusCode();
+                var text = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
                 var info = JsonNode.Parse(text);
                 var version = info?["version"]?.GetValue<string>();
                 if (!Newer(version, App.Version) || version == _installed) return;

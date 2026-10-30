@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
@@ -16,17 +17,64 @@ namespace TeamHub.Revit
     {
         const int Chunk = 2 * 1024 * 1024;
 
-        /// <summary>Self-test only: two Revits on one PC each keep their own copy.</summary>
-        public static string RootOverride;
-
         public static bool IsHosted(string centralPath) =>
             centralPath != null && centralPath.StartsWith("hub:", StringComparison.OrdinalIgnoreCase);
 
-        public static string CentralFile(string project, string hubPath)
+        /// <summary>
+        /// My copy of central. Revit writes the central's full path INSIDE the
+        /// file and every local syncs to that path, so it must be the same on
+        /// every PC: C:\Users\Public\Documents\TeamHub\p&lt;project id&gt;\central\&lt;name&gt;.rvt
+        /// (a per-user folder would send a teammate's sync to my user folder).
+        /// </summary>
+        public static string CentralFile(long pid, string hubPath)
         {
-            var dir = Path.Combine(RootOverride ?? Ui.LocalFolder(project), "central");
+            var root = Environment.GetEnvironmentVariable("TEAMHUB_CENTRAL_ROOT") // self-test only
+                       ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonDocuments), "TeamHub");
+            var dir = Path.Combine(root, $"p{pid}", "central");
             Directory.CreateDirectory(dir);
             return Path.Combine(dir, Ui.SafeName(hubPath.Substring(4)));
+        }
+
+        // Packages downloaded ahead of time, in the background (central file -> rev, zip).
+        static readonly ConcurrentDictionary<string, (int rev, byte[] zip)> Ready = new ConcurrentDictionary<string, (int, byte[])>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Download the newest package now (background), so the next round only swaps files.</summary>
+        public static async Task<int> Prefetch(HubClient hub, long pid, string centralFile)
+        {
+            var info = await Info(hub, pid).ConfigureAwait(false);
+            if (info.rev == 0 || info.rev <= LocalRev(centralFile)) return 0;
+            if (Ready.TryGetValue(centralFile, out var have) && have.rev >= info.rev) return have.rev;
+            var zip = await Download(hub, pid, info.rev, info.size, null).ConfigureAwait(false);
+            Ready[centralFile] = (info.rev, zip);
+            Log.Info($"central r{info.rev} downloaded ahead ({zip.Length / 1024} KB)");
+            return info.rev;
+        }
+
+        public static bool HasReady(string centralFile, int newerThan) =>
+            Ready.TryGetValue(centralFile, out var r) && r.rev > newerThan;
+
+        static async Task<(int rev, long size)> Info(HubClient hub, long pid)
+        {
+            var r = await hub.Get($"/api/projects/{pid}/revit/central").ConfigureAwait(false);
+            if (!r.Ok) throw new IOException("ما كدرت أوصل للسيرفر: " + r.Error);
+            return (r.Data["central"]["rev"].GetValue<int>(), r.Data["central"]["size"].GetValue<long>());
+        }
+
+        static async Task<byte[]> Download(HubClient hub, long pid, int rev, long size, IProgress<double> progress)
+        {
+            using var ms = new MemoryStream();
+            long offset = 0;
+            while (offset < size)
+            {
+                var c = await hub.Get($"/api/projects/{pid}/revit/central?rev={rev}&offset={offset}&length={Chunk}").ConfigureAwait(false);
+                if (!c.Ok) throw new IOException("تحميل الملف الرئيسي انقطع: " + c.Error);
+                var bytes = Convert.FromBase64String(c.Data["data"].GetValue<string>());
+                if (bytes.Length == 0) break;
+                ms.Write(bytes, 0, bytes.Length);
+                offset += bytes.Length;
+                progress?.Report(size > 0 ? (double)offset / size : 1);
+            }
+            return ms.ToArray();
         }
 
         static string RevFile(string centralFile) => Path.Combine(Path.GetDirectoryName(centralFile), "rev.txt");
@@ -43,30 +91,19 @@ namespace TeamHub.Revit
         public static void SetLocalRev(string centralFile, int rev) => File.WriteAllText(RevFile(centralFile), rev.ToString());
 
         /// <summary>Bring my copy of central up to the server's newest revision. Returns that revision.</summary>
-        public static async Task<int> EnsureLatest(HubClient hub, long pid, string centralFile)
+        public static async Task<int> EnsureLatest(HubClient hub, long pid, string centralFile, IProgress<double> progress = null)
         {
-            var r = await hub.Get($"/api/projects/{pid}/revit/central").ConfigureAwait(false);
-            if (!r.Ok) throw new IOException("ما كدرت أوصل للسيرفر: " + r.Error);
-            var rev = r.Data["central"]["rev"].GetValue<int>();
+            var (rev, size) = await Info(hub, pid).ConfigureAwait(false);
             var local = LocalRev(centralFile);
             if (rev == 0 || rev <= local) return local;
-            var size = r.Data["central"]["size"].GetValue<long>();
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            using var ms = new MemoryStream();
-            long offset = 0;
-            while (offset < size)
-            {
-                var c = await hub.Get($"/api/projects/{pid}/revit/central?rev={rev}&offset={offset}&length={Chunk}").ConfigureAwait(false);
-                if (!c.Ok) throw new IOException("تحميل الملف الرئيسي انقطع: " + c.Error);
-                var bytes = Convert.FromBase64String(c.Data["data"].GetValue<string>());
-                if (bytes.Length == 0) break;
-                ms.Write(bytes, 0, bytes.Length);
-                offset += bytes.Length;
-            }
-            ms.Position = 0;
-            Unpack(ms, centralFile);
+            // Already downloaded in the background? Then this is only a quick swap.
+            byte[] zip = Ready.TryRemove(centralFile, out var ready) && ready.rev == rev
+                ? ready.zip
+                : await Download(hub, pid, rev, size, progress).ConfigureAwait(false);
+            using (var ms = new MemoryStream(zip)) Unpack(ms, centralFile);
             SetLocalRev(centralFile, rev);
-            Log.Info($"central r{rev} downloaded ({size / 1024} KB, {sw.ElapsedMilliseconds} ms)");
+            Log.Info($"central r{rev} in place ({zip.Length / 1024} KB, {sw.ElapsedMilliseconds} ms)");
             return rev;
         }
 

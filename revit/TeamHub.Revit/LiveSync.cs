@@ -22,6 +22,10 @@ namespace TeamHub.Revit
         /// <summary>Central lives on the Team Hub server; CentralPath is my copy of it.</summary>
         public bool Hosted;
         public int CentralRev;
+        /// <summary>A teammate's newer central is being downloaded in the background.</summary>
+        public volatile bool Prefetching;
+        /// <summary>The background download for the pending reload is done (or wasn't needed).</summary>
+        public volatile bool PrefetchChecked;
 
         public volatile bool Dirty;
         public volatile bool PendingReload;
@@ -79,6 +83,7 @@ namespace TeamHub.Revit
         volatile bool _requesting;
         volatile bool _raised;
         volatile bool _inOwnOp;
+        volatile bool _ending;   // the hub hasn't confirmed my last turn is over yet
         string _lastStatus;
 
         public List<TeamMember> Online { get; private set; } = new List<TeamMember>();
@@ -180,7 +185,11 @@ namespace TeamHub.Revit
                 var s = _s;
                 var hub = _hub;
                 if (s == null || hub == null || !App.Settings.Live) return;
-                if (_requesting || _raised || _granted != Work.None) return;
+                // One round at a time: never ask for the next turn while Revit is
+                // still syncing, or before the hub has closed my previous turn
+                // (asking early renewed my own turn, and closing the old one then
+                // took the new one away → the upload was refused with no_turn).
+                if (_requesting || _raised || _granted != Work.None || _inOwnOp || _ending) return;
                 var now = DateTime.UtcNow;
                 if (now < s.NextAttemptUtc) return;
 
@@ -195,6 +204,32 @@ namespace TeamHub.Revit
                 else if (due && quiet && s.PendingReload) work = Work.Reload;
                 else if (!hub.Connected && !s.Dirty && (now - s.LastCheckUtc).TotalSeconds >= 20) work = Work.Check;
                 if (work == Work.None) return;
+                // Hosted: a teammate's newer central is downloaded in the background
+                // first, so Revit never waits on the network in the middle of a round.
+                if (s.Hosted && s.PendingReload && (work == Work.Sync || work == Work.Reload) && !s.PrefetchChecked)
+                {
+                    if (!s.Prefetching)
+                    {
+                        s.Prefetching = true;
+                        SetState(s, "waiting");
+                        Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await HostedCentral.Prefetch(hub, s.ProjectId, s.CentralPath).ConfigureAwait(false);
+                                s.PrefetchChecked = true; // downloaded, or my copy is already the newest
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Error("prefetch", ex);
+                                s.NextAttemptUtc = DateTime.UtcNow.AddSeconds(5);
+                            }
+                            finally { s.Prefetching = false; }
+                            Tick();
+                        });
+                    }
+                    if (!(work == Work.Sync && s.ForceNow)) return;
+                }
                 s.ForceNow = false;
 
                 if (work == Work.Check)
@@ -359,6 +394,7 @@ namespace TeamHub.Revit
                     doc.ReloadLatest(new ReloadLatestOptions());
                 }
                 s.PendingReload = false;
+                s.PrefetchChecked = false;
                 s.LastSyncUtc = DateTime.UtcNow;
                 s.LastRoundUtc = s.LastSyncUtc;
                 s.LastDuration = sw.Elapsed;
@@ -420,8 +456,16 @@ namespace TeamHub.Revit
             if (noTurn && !ok) return;
             var kind = work == Work.Sync ? "sync" : "reload";
             var centralRev = s.Hosted ? s.CentralRev : 0;
-            Task.Run(() => hub.Post($"/api/projects/{s.ProjectId}/revit/sync/end",
-                new { ok, kind, duration_ms = ms, added, modified, deleted, central_rev = centralRev }));
+            _ending = true;
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await hub.Post($"/api/projects/{s.ProjectId}/revit/sync/end",
+                        new { ok, kind, duration_ms = ms, added, modified, deleted, central_rev = centralRev }).ConfigureAwait(false);
+                }
+                finally { _ending = false; }
+            });
             if (ok && work == Work.Sync)
                 AddActivity(App.Settings.DisplayName, null, $"زامنت تعديلاتك ({added + modified + deleted} تغيير، {ms / 1000.0:0.0} ثانية)");
         }
@@ -454,6 +498,7 @@ namespace TeamHub.Revit
                     var p = m["payload"];
                     if (p?["kind"]?.GetValue<string>() != "sync") break;
                     s.PendingReload = true;
+                    s.PrefetchChecked = false; // a newer central exists: fetch it in the background first
                     var n = (p["added"]?.GetValue<int>() ?? 0) + (p["modified"]?.GetValue<int>() ?? 0) + (p["deleted"]?.GetValue<int>() ?? 0);
                     AddActivity(m["user"]?["display_name"]?.GetValue<string>(), m["user"]?["color"]?.GetValue<string>(),
                                 $"زامن تعديلات ({n} تغيير)، راح تظهر عندك هسه");
