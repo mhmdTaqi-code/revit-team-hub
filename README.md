@@ -60,6 +60,7 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 5. **Radmin VPN:** سوي شبكة، وخلي الفريق ينضم إلها. عنوان السيرفر للفريق: `http://26.x.x.x:8787`.
 
 ما يحتاج فولدر مشترك ولا صلاحيات Windows خاصة. الملف الرئيسي ونسخه القديمة كلها بـ `server/data/revit-central/`.
+عند كل عضو، نسخته من الملف الرئيسي تكون بـ `C:\Users\Public\Documents\TeamHub\`. نفس المسار بكل جهاز، وهذا ضروري لـ Revit.
 
 ## الخطوة 2: كل عضو (ومنهم انت)
 
@@ -105,6 +106,7 @@ Built on Revit's own worksharing, so it's safe for the model: Team Hub **syncs b
 |---|---|
 | تبويب Team Hub ما طالع | شغّل `install.cmd` مرة ثانية وافتح Revit. إذا سألك عن الإضافة، اختار **Always Load** |
 | «ما كدرت أوصل للسيرفر» | تأكد إن نافذة `start-server.bat` مفتوحة بجهاز السيرفر، وRadmin متصل، والعنوان صح |
+| «Access to the path … denied» بالمزامنة | المشروع انسوى بنسخة قبل 1.5. حدّث للـ 1.5، وسوي المشروع من جديد (**مشروع فريق جديد**) |
 | شي مو مضبوط | السجل بـ `%APPDATA%\TeamHub\revit.log` |
 
 ## حالة الاختبار
